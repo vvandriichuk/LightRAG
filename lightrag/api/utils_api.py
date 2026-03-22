@@ -273,6 +273,52 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     return combined_dependency
 
 
+ROLE_HIERARCHY = {"admin": 3, "user": 2, "viewer": 1, "guest": 0}
+
+
+def require_role(minimum_role: str, api_key: Optional[str] = None):
+    """
+    Create a dependency that checks if the authenticated user has at least
+    the specified role level. Role hierarchy: admin > user > viewer > guest.
+    """
+    combined_auth = get_combined_auth_dependency(api_key)
+    min_level = ROLE_HIERARCHY.get(minimum_role, 0)
+
+    oauth2_scheme = OAuth2PasswordBearer(
+        tokenUrl="login", auto_error=False
+    )
+
+    async def role_dependency(
+        request: Request,
+        token: str = Security(oauth2_scheme),
+    ):
+        # If no auth configured, allow everything
+        if not auth_configured:
+            return
+
+        # API key bypasses role checks (full access)
+        if api_key and request.headers.get("x-api-key") == api_key:
+            return
+
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No credentials provided. Please login.",
+            )
+
+        token_info = auth_handler.validate_token(token)
+        user_role = token_info.get("role", "viewer")
+        user_level = ROLE_HIERARCHY.get(user_role, 0)
+
+        if user_level < min_level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Role '{user_role}' cannot perform this action. Required: '{minimum_role}' or higher.",
+            )
+
+    return role_dependency
+
+
 def display_splash_screen(args: argparse.Namespace) -> None:
     """
     Display a colorful splash screen showing LightRAG server configuration

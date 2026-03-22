@@ -33,22 +33,29 @@ class AuthHandler:
         self.expire_hours = global_args.token_expire_hours
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
+        self.roles = {}
         auth_accounts = global_args.auth_accounts
         invalid_accounts = []
         if auth_accounts:
             for account in auth_accounts.split(","):
                 try:
-                    username, password = account.split(":", 1)
+                    parts = account.split(":")
+                    username = parts[0]
+                    password = parts[1] if len(parts) > 1 else ""
+                    role = parts[2] if len(parts) > 2 else "user"
                     if not username or not password:
                         raise ValueError
+                    if role not in ("admin", "user", "viewer"):
+                        role = "user"
                     self.accounts[username] = password
+                    self.roles[username] = role
                 except ValueError:
                     invalid_accounts.append(account)
         if invalid_accounts:
             invalid_entries = ", ".join(invalid_accounts)
             logger.error(f"Invalid account format in AUTH_ACCOUNTS: {invalid_entries}")
             raise ValueError(
-                "AUTH_ACCOUNTS must use comma-separated user:password pairs."
+                "AUTH_ACCOUNTS must use comma-separated user:password:role entries."
             )
 
     def verify_password(self, username: str, plain_password: str) -> bool:

@@ -1,4 +1,31 @@
 services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    container_name: lightrag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD: lightrag_secret
+      POSTGRES_DB: lightrag
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-extensions.sql:/docker-entrypoint-initdb.d/01-init-extensions.sql
+    shm_size: '512mb'
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U lightrag -d lightrag" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c work_mem=4MB
+        -c maintenance_work_mem=128MB
+        -c effective_cache_size=512MB
+        -c shared_preload_libraries=age
+        -c max_connections=20
   lightrag:
     image: ghcr.io/hkuds/lightrag:latest
     build:
@@ -13,6 +40,9 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
+      - ./lightrag:/app/lightrag
+    env_file:
+      - .env
     deploy:
       restart_policy:
         condition: on-failure
@@ -24,3 +54,6 @@ services:
       INPUT_DIR: "/app/data/inputs"
       HOST: "0.0.0.0"
       PORT: "9621"
+
+volumes:
+  pgdata:

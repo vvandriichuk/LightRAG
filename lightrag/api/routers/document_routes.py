@@ -28,7 +28,7 @@ from lightrag.utils import (
     compute_mdhash_id,
     sanitize_text_for_encoding,
 )
-from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.utils_api import get_combined_auth_dependency, require_role
 from ..config import global_args
 
 
@@ -2085,9 +2085,11 @@ def create_document_routes(
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
+    # Write operations require at least "user" role (blocks "viewer")
+    write_auth = require_role("user", api_key)
 
     @router.post(
-        "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
+        "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth), Depends(write_auth)]
     )
     async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """
@@ -2112,7 +2114,7 @@ def create_document_routes(
         )
 
     @router.post(
-        "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+        "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth), Depends(write_auth)]
     )
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
@@ -2280,7 +2282,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+        "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth), Depends(write_auth)]
     )
     async def insert_text(
         request: InsertTextRequest, background_tasks: BackgroundTasks
@@ -2360,7 +2362,7 @@ def create_document_routes(
     @router.post(
         "/texts",
         response_model=InsertResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
     )
     async def insert_texts(
         request: InsertTextsRequest, background_tasks: BackgroundTasks
@@ -2441,7 +2443,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
-        "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
+        "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth), Depends(write_auth)]
     )
     async def clear_documents():
         """
@@ -2848,7 +2850,7 @@ def create_document_routes(
     @router.delete(
         "/delete_document",
         response_model=DeleteDocByIdResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
         summary="Delete a document and all its associated data by its ID.",
     )
     async def delete_document(
@@ -2927,7 +2929,7 @@ def create_document_routes(
     @router.post(
         "/clear_cache",
         response_model=ClearCacheResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
     )
     async def clear_cache(request: ClearCacheRequest):
         """
@@ -2961,7 +2963,7 @@ def create_document_routes(
     @router.delete(
         "/delete_entity",
         response_model=DeletionResult,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
     )
     async def delete_entity(request: DeleteEntityRequest):
         """
@@ -2996,7 +2998,7 @@ def create_document_routes(
     @router.delete(
         "/delete_relation",
         response_model=DeletionResult,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
     )
     async def delete_relation(request: DeleteRelationRequest):
         """
@@ -3222,7 +3224,7 @@ def create_document_routes(
     @router.post(
         "/reprocess_failed",
         response_model=ReprocessResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
     )
     async def reprocess_failed_documents(background_tasks: BackgroundTasks):
         """
@@ -3268,7 +3270,7 @@ def create_document_routes(
     @router.post(
         "/cancel_pipeline",
         response_model=CancelPipelineResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
     )
     async def cancel_pipeline():
         """

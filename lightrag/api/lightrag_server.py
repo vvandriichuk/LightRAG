@@ -1193,9 +1193,10 @@ def create_app(args):
         if not auth_handler.verify_password(username, form_data.password):
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
-        # Regular user login
+        # Regular user login with role from config
+        user_role = auth_handler.roles.get(username, "user")
         user_token = auth_handler.create_token(
-            username=username, role="user", metadata={"auth_mode": "enabled"}
+            username=username, role=user_role, metadata={"auth_mode": "enabled"}
         )
         return {
             "access_token": user_token,
