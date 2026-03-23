@@ -106,8 +106,8 @@ TITLE_PREFIXES = frozenset({"DR.", "DR", "MR.", "MR", "MRS.", "MRS", "MS.", "MS"
 
 def _is_garbage_entity(name: str) -> bool:
     """Return True if entity name matches known garbage patterns."""
-    # Commas in entity names indicate descriptive phrases
-    if "," in name:
+    # Commas and colons in entity names indicate descriptive phrases or titles
+    if "," in name or ":" in name:
         return True
     words = name.split()
     if len(words) > GARBAGE_ENTITY_MAX_WORDS:
@@ -2946,9 +2946,19 @@ async def resolve_cross_document_entities(
                 best_match = existing_name
 
         if best_match and (is_deterministic or best_score >= threshold):
-            simple_mapping[new_name] = best_match
-            reason = "deterministic" if is_deterministic else f"sim={best_score:.2f}"
-            logger.info(f"Cross-doc dedup: '{new_name}' -> '{best_match}' ({reason})")
+            # Only map new → existing if existing is at least as specific (longer or equal).
+            # If new name is more specific (longer), skip — keep both, prefer longer name.
+            new_words = len(new_name.split())
+            existing_words = len(best_match.split())
+            if existing_words >= new_words:
+                simple_mapping[new_name] = best_match
+                reason = "deterministic" if is_deterministic else f"sim={best_score:.2f}"
+                logger.info(f"Cross-doc dedup: '{new_name}' -> '{best_match}' ({reason})")
+            else:
+                logger.info(
+                    f"Cross-doc dedup: skipped '{new_name}' -> '{best_match}' "
+                    f"(new is more specific: {new_words} > {existing_words} words)"
+                )
 
     if not simple_mapping:
         return all_nodes, all_edges
