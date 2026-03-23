@@ -2703,29 +2703,43 @@ async def resolve_entity_duplicates(
 
     logger.info(f"Entity dedup: found {len(clusters)} clusters of similar names")
 
-    # Separate simple clusters (high similarity) from ambiguous ones (abbreviations, substrings)
+    # Separate deterministic clusters from truly ambiguous ones
     simple_mapping = {}
     ambiguous_clusters = []
 
     for cluster in clusters:
-        # Check if all pairs have high string similarity
+        # Check if cluster can be resolved deterministically:
+        # 1. All pairs have high string similarity, OR
+        # 2. All names are related by abbreviation/word-subset to at least one other name
         all_high_similarity = True
+        all_structurally_related = True
+
         for i in range(len(cluster)):
-            for j in range(i + 1, len(cluster)):
-                sim = difflib.SequenceMatcher(None, cluster[i], cluster[j]).ratio()
+            has_structural_link = False
+            for j in range(len(cluster)):
+                if i == j:
+                    continue
+                a, b = cluster[i], cluster[j]
+                sim = difflib.SequenceMatcher(None, a, b).ratio()
                 if sim < threshold:
                     all_high_similarity = False
+                shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+                if (_is_abbreviation_of(shorter, longer)
+                        or _words_are_subset(shorter, longer)
+                        or sim >= threshold):
+                    has_structural_link = True
                     break
-            if not all_high_similarity:
-                break
+            if not has_structural_link:
+                all_structurally_related = False
 
-        if all_high_similarity:
-            # Simple case: pick canonical by frequency/length
+        if all_high_similarity or all_structurally_related:
+            # Deterministic: pick canonical by frequency/length
             canonical = _pick_canonical_name(cluster, all_nodes)
             for name in cluster:
                 if name != canonical:
                     simple_mapping[name] = canonical
-            logger.info(f"Entity dedup (fuzzy): {cluster} -> '{canonical}'")
+            reason = "fuzzy" if all_high_similarity else "structural"
+            logger.info(f"Entity dedup ({reason}): {cluster} -> '{canonical}'")
         else:
             ambiguous_clusters.append(cluster)
 
