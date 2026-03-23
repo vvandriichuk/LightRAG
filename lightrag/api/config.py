@@ -382,6 +382,7 @@ def parse_args() -> argparse.Namespace:
     # Inject entity dedup configuration
     args.enable_entity_dedup = get_env_value("ENABLE_ENTITY_DEDUP", True, bool)
     args.entity_dedup_threshold = get_env_value("ENTITY_DEDUP_THRESHOLD", 0.85, float)
+    args.enable_cross_doc_dedup = get_env_value("ENABLE_CROSS_DOC_DEDUP", True, bool)
 
     # Set document_loading_engine from --docling flag
     if args.docling:

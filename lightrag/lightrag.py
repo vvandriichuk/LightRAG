@@ -56,6 +56,7 @@ from lightrag.constants import (
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
     DEFAULT_ENABLE_ENTITY_DEDUP,
     DEFAULT_ENTITY_DEDUP_THRESHOLD,
+    DEFAULT_ENABLE_CROSS_DOC_DEDUP,
 )
 from lightrag.utils import get_env_value
 
@@ -260,6 +261,11 @@ class LightRAG:
         )
     )
     """Similarity threshold for fuzzy entity name matching (0.0-1.0)."""
+
+    enable_cross_doc_dedup: bool = field(
+        default=get_env_value("ENABLE_CROSS_DOC_DEDUP", DEFAULT_ENABLE_CROSS_DOC_DEDUP, bool)
+    )
+    """Enable cross-document entity deduplication against existing graph entities."""
 
     # Text chunking
     # ---

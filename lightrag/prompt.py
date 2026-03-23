@@ -20,6 +20,10 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
             - Always prefer the **full formal name** over abbreviations or acronyms (e.g., "European Union" not "EU", "United Nations" not "UN").
             - Use **nominative case** (base grammatical form) for all languages (e.g., "Moscow" not "Moscow's"; "Москва" not "Москвы" or "Москве").
             - Use **singular form** (e.g., "Document" not "Documents").
+            - **NEVER use possessive forms** as entity names (e.g., use "Dvorkin" not "Dvorkin's Sect"; use "European Union" not "Europe's Union").
+            - **NEVER extract descriptive phrases, roles, or titles** as entity names (e.g., "Agent of Dvorkin", "Member of the Council", "Dvorkin's Goal" are NOT entities).
+            - **NEVER extract document/book/article titles** as entity names unless the document itself is a notable work being discussed as a subject.
+            - Entity names must be **proper nouns** (specific people, organizations, places, events) or **well-defined concepts** — not vague descriptions or attributive phrases.
             - If the same entity appears with different forms, abbreviations, or morphological variants in the text, always use the **same full canonical name** for all occurrences.
             - Ensure **consistent naming** across the entire extraction process.
         *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.

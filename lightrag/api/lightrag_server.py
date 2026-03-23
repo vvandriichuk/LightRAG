@@ -1099,6 +1099,7 @@ def create_app(args):
             enable_llm_cache=args.enable_llm_cache,
             enable_entity_dedup=args.enable_entity_dedup,
             entity_dedup_threshold=args.entity_dedup_threshold,
+            enable_cross_doc_dedup=args.enable_cross_doc_dedup,
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,

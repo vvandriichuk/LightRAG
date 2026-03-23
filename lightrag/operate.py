@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import json
 import json_repair
+import re
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
@@ -67,6 +68,7 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENABLE_ENTITY_DEDUP,
     DEFAULT_ENTITY_DEDUP_THRESHOLD,
+    DEFAULT_ENABLE_CROSS_DOC_DEDUP,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
@@ -76,6 +78,136 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
+
+# ===== Garbage Entity Filter (Step 1) =====
+
+GARBAGE_ENTITY_PREPOSITIONS = frozenset(
+    {"OF", "FOR", "BY", "FROM", "ABOUT", "AGAINST", "WITHIN", "INTO", "ONTO"}
+)
+GARBAGE_ENTITY_MAX_WORDS = 7
+GARBAGE_ENTITY_PATTERNS = [
+    re.compile(r"'S\b"),
+    re.compile(r"\bAGENT OF\b"),
+    re.compile(r"\bMEMBER OF\b"),
+    re.compile(r"\bGOAL OF\b"),
+    re.compile(r"\bPART OF\b"),
+    re.compile(r"\bFOLLOWER OF\b"),
+    re.compile(r"\bLEADER OF\b"),
+    re.compile(r"\b\d{4}:\s"),
+    re.compile(r"\bSECT\.\s*\d"),
+]
+
+
+def _is_garbage_entity(name: str) -> bool:
+    """Return True if entity name matches known garbage patterns."""
+    words = name.split()
+    if len(words) > GARBAGE_ENTITY_MAX_WORDS:
+        return True
+    # High preposition density (2+ prepositions = almost certainly a phrase, not a name)
+    if len(words) >= 4:
+        prep_count = sum(1 for w in words if w in GARBAGE_ENTITY_PREPOSITIONS)
+        if prep_count >= 2:
+            return True
+    for pattern in GARBAGE_ENTITY_PATTERNS:
+        if pattern.search(name):
+            return True
+    return False
+
+
+# ===== Transliteration Detection (Step 2) =====
+
+TRANSLIT_EQUIVALENCES: list[tuple[str, str]] = [
+    ("KS", "X"),
+    ("CK", "K"),
+    ("DJ", "J"),
+    ("DZH", "J"),
+    ("YU", "IU"),
+    ("YA", "IA"),
+    ("YE", "IE"),
+    ("EI", "EY"),
+    ("II", "IY"),
+    ("IJ", "IY"),
+    ("SCH", "SH"),
+    ("SHCH", "SH"),
+    ("TS", "C"),
+    ("TZ", "C"),
+    ("PH", "F"),
+    ("TH", "T"),
+    ("OV", "OFF"),
+    ("EV", "EFF"),
+    ("W", "V"),
+]
+VOWELS = frozenset("AEIOUY")
+
+
+def _consonant_skeleton(name: str) -> str:
+    """Strip vowels and collapse repeated consonants."""
+    result: list[str] = []
+    prev = ""
+    for ch in name:
+        if ch in VOWELS or ch == " ":
+            prev = ""
+            continue
+        if ch != prev:
+            result.append(ch)
+        prev = ch
+    return "".join(result)
+
+
+def _normalize_translit(name: str) -> str:
+    """Apply transliteration equivalences to produce a canonical form."""
+    canonical = name
+    for a, b in TRANSLIT_EQUIVALENCES:
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        canonical = canonical.replace(longer, shorter)
+    return canonical
+
+
+def _is_transliteration_variant(name_a: str, name_b: str) -> bool:
+    """Check if two names are likely transliteration variants."""
+    words_a = name_a.split()
+    words_b = name_b.split()
+    if len(words_a) != len(words_b):
+        return False
+    if len(words_a) > 1 and not (set(words_a) & set(words_b)):
+        return False
+
+    # For multi-word names, compare word-by-word
+    if len(words_a) > 1:
+        diff_pairs = [(wa, wb) for wa, wb in zip(words_a, words_b) if wa != wb]
+        if not diff_pairs:
+            return False
+        for wa, wb in diff_pairs:
+            norm_wa = _normalize_translit(wa)
+            norm_wb = _normalize_translit(wb)
+            if norm_wa == norm_wb:
+                continue
+            # Check normalized form similarity (catches ALEXANDR ~ ALEXANDER)
+            norm_sim = difflib.SequenceMatcher(None, norm_wa, norm_wb).ratio()
+            if norm_sim >= 0.85:
+                continue
+            skel_wa = _consonant_skeleton(wa)
+            skel_wb = _consonant_skeleton(wb)
+            if not skel_wa or not skel_wb:
+                return False
+            skel_sim = difflib.SequenceMatcher(None, skel_wa, skel_wb).ratio()
+            if skel_sim < 0.75:
+                return False
+        return True
+
+    # Single-word names: compare directly
+    norm_a = _normalize_translit(name_a)
+    norm_b = _normalize_translit(name_b)
+    if norm_a == norm_b:
+        return True
+    skel_a = _consonant_skeleton(name_a)
+    skel_b = _consonant_skeleton(name_b)
+    if skel_a and skel_b:
+        skel_sim = difflib.SequenceMatcher(None, skel_a, skel_b).ratio()
+        if skel_sim >= 0.75:
+            return True
+    return False
 
 
 def _truncate_entity_identifier(
@@ -398,11 +530,23 @@ async def _handle_single_entity_extraction(
             record_attributes[1], remove_inner_quotes=True
         ).upper()
 
+        # Normalize apostrophe variants and strip possessive suffixes
+        entity_name = entity_name.replace("\u2019", "'").replace("\u2018", "'")
+        if entity_name.endswith("'S"):
+            entity_name = entity_name[:-2].rstrip()
+        elif entity_name.endswith("S'"):
+            entity_name = entity_name[:-1]
+
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
             logger.info(
                 f"Empty entity name found after sanitization. Original: '{record_attributes[1]}'"
             )
+            return None
+
+        # Filter garbage entities (descriptive phrases, document titles, etc.)
+        if _is_garbage_entity(entity_name):
+            logger.info(f"Filtered garbage entity: '{entity_name}'")
             return None
 
         # Process entity type with same cleaning pipeline
@@ -489,6 +633,19 @@ async def _handle_single_relationship_extraction(
         target = sanitize_and_normalize_extracted_text(
             record_attributes[2], remove_inner_quotes=True
         ).upper()
+
+        # Normalize apostrophe variants and strip possessive suffixes
+        for _orig, _norm in [("\u2019", "'"), ("\u2018", "'")]:
+            source = source.replace(_orig, _norm)
+            target = target.replace(_orig, _norm)
+        if source.endswith("'S"):
+            source = source[:-2].rstrip()
+        elif source.endswith("S'"):
+            source = source[:-1]
+        if target.endswith("'S"):
+            target = target[:-2].rstrip()
+        elif target.endswith("S'"):
+            target = target[:-1]
 
         # Validate entity names after all cleaning steps
         if not source:
@@ -2560,6 +2717,9 @@ def _cluster_similar_names(
             # Word-level subset: all words of shorter name appear in longer name
             elif _words_are_subset(shorter, longer):
                 union(a, b)
+            # Transliteration variant (ALEKSANDR vs ALEXANDER)
+            elif _is_transliteration_variant(a, b):
+                union(a, b)
 
     clusters_map = defaultdict(list)
     for name in names:
@@ -2676,6 +2836,99 @@ def _apply_name_mapping(
     return dict(resolved_nodes), dict(resolved_edges)
 
 
+# ===== Cross-Document Entity Dedup (Step 3) =====
+
+
+def _build_blocking_keys(name: str) -> set[str]:
+    """Generate blocking keys for efficient entity name comparison."""
+    keys: set[str] = set()
+    words = name.split()
+    for w in words:
+        if len(w) >= 3:
+            keys.add(f"w:{w}")
+            keys.add(f"p3:{w[:3]}")
+    skeleton = _consonant_skeleton(name)
+    if len(skeleton) >= 3:
+        keys.add(f"cs:{skeleton}")
+    if len(words) >= 2:
+        keys.add(f"sw:{' '.join(sorted(words))}")
+    return keys
+
+
+async def resolve_cross_document_entities(
+    all_nodes: dict[str, list],
+    all_edges: dict[tuple, list],
+    knowledge_graph_inst: BaseGraphStorage,
+    global_config: dict,
+    llm_response_cache: BaseKVStorage | None = None,
+) -> tuple[dict[str, list], dict[tuple, list]]:
+    """Match new entity names against existing graph entities for cross-document dedup."""
+    new_names = list(all_nodes.keys())
+    if not new_names:
+        return all_nodes, all_edges
+
+    existing_names = await knowledge_graph_inst.get_all_labels()
+    if not existing_names:
+        return all_nodes, all_edges
+
+    existing_set = set(existing_names)
+    truly_new = [n for n in new_names if n not in existing_set]
+    if not truly_new:
+        return all_nodes, all_edges
+
+    # Build blocking index from existing names
+    blocking_index: dict[str, set[str]] = defaultdict(set)
+    for name in existing_names:
+        for key in _build_blocking_keys(name):
+            blocking_index[key].add(name)
+
+    threshold = global_config.get("entity_dedup_threshold", DEFAULT_ENTITY_DEDUP_THRESHOLD)
+    simple_mapping: dict[str, str] = {}
+
+    for new_name in truly_new:
+        candidates: set[str] = set()
+        for key in _build_blocking_keys(new_name):
+            candidates.update(blocking_index.get(key, set()))
+        if not candidates:
+            continue
+
+        best_match: str | None = None
+        best_score: float = 0.0
+        is_deterministic = False
+
+        for existing_name in candidates:
+            shorter, longer = (new_name, existing_name) if len(new_name) <= len(existing_name) else (existing_name, new_name)
+
+            if _is_abbreviation_of(shorter, longer):
+                best_match = existing_name
+                is_deterministic = True
+                break
+            if _words_are_subset(shorter, longer):
+                best_match = existing_name
+                is_deterministic = True
+                break
+            if _is_transliteration_variant(new_name, existing_name):
+                best_match = existing_name
+                is_deterministic = True
+                break
+
+            sim = difflib.SequenceMatcher(None, new_name, existing_name).ratio()
+            if sim >= threshold and sim > best_score:
+                best_score = sim
+                best_match = existing_name
+
+        if best_match and (is_deterministic or best_score >= threshold):
+            simple_mapping[new_name] = best_match
+            reason = "deterministic" if is_deterministic else f"sim={best_score:.2f}"
+            logger.info(f"Cross-doc dedup: '{new_name}' -> '{best_match}' ({reason})")
+
+    if not simple_mapping:
+        return all_nodes, all_edges
+
+    logger.info(f"Cross-doc dedup: remapping {len(simple_mapping)} entity names to existing graph entities")
+    return _apply_name_mapping(all_nodes, all_edges, simple_mapping)
+
+
 async def resolve_entity_duplicates(
     all_nodes: dict[str, list],
     all_edges: dict[tuple, list],
@@ -2726,6 +2979,7 @@ async def resolve_entity_duplicates(
                 shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
                 if (_is_abbreviation_of(shorter, longer)
                         or _words_are_subset(shorter, longer)
+                        or _is_transliteration_variant(a, b)
                         or sim >= threshold):
                     has_structural_link = True
                     break
@@ -2826,8 +3080,16 @@ async def merge_nodes_and_edges(
             sorted_edge_key = tuple(sorted(edge_key))
             all_edges[sorted_edge_key].extend(edges)
 
-    # ===== Entity Deduplication Phase =====
+    # ===== Cross-Document Entity Dedup Phase =====
     enable_entity_dedup = global_config.get("enable_entity_dedup", DEFAULT_ENABLE_ENTITY_DEDUP)
+    enable_cross_doc_dedup = global_config.get("enable_cross_doc_dedup", DEFAULT_ENABLE_CROSS_DOC_DEDUP)
+    if enable_cross_doc_dedup and enable_entity_dedup and len(all_nodes) > 0:
+        all_nodes, all_edges = await resolve_cross_document_entities(
+            dict(all_nodes), dict(all_edges),
+            knowledge_graph_inst, global_config, llm_response_cache
+        )
+
+    # ===== Intra-Document Entity Dedup Phase =====
     if enable_entity_dedup and len(all_nodes) > 1:
         all_nodes, all_edges = await resolve_entity_duplicates(
             dict(all_nodes), dict(all_edges), global_config, llm_response_cache
