@@ -2805,7 +2805,7 @@ async def merge_nodes_and_edges(
                         entity_name,
                         entities,
                         knowledge_graph_inst,
-                        entity_vdb,
+                        None,  # Skip individual VDB upsert; batch after Phase 1
                         global_config,
                         pipeline_status,
                         pipeline_status_lock,
@@ -2878,6 +2878,24 @@ async def merge_nodes_and_edges(
         if first_exception is not None:
             raise first_exception
 
+    # ===== Phase 1.5: Batch VDB upsert for entities =====
+    if entity_vdb is not None and processed_entities:
+        batch_entity_vdb_data = {}
+        for entity_data in processed_entities:
+            if entity_data and entity_data.get("entity_name"):
+                ename = entity_data["entity_name"]
+                eid = compute_mdhash_id(str(ename), prefix="ent-")
+                batch_entity_vdb_data[eid] = {
+                    "entity_name": ename,
+                    "entity_type": entity_data.get("entity_type", ""),
+                    "content": f"{ename}\n{entity_data.get('description', '')}",
+                    "source_id": entity_data.get("source_id", ""),
+                    "file_path": entity_data.get("file_path", ""),
+                }
+        if batch_entity_vdb_data:
+            logger.info(f"Batch embedding {len(batch_entity_vdb_data)} entities to VDB")
+            await entity_vdb.upsert(batch_entity_vdb_data)
+
     # ===== Phase 2: Process all relationships concurrently =====
     log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
     logger.info(log_message)
@@ -2913,8 +2931,8 @@ async def merge_nodes_and_edges(
                         edge_key[1],
                         edges,
                         knowledge_graph_inst,
-                        relationships_vdb,
-                        entity_vdb,
+                        None,  # Skip individual VDB upsert; batch after Phase 2
+                        None,  # Skip individual entity VDB upsert for added entities
                         global_config,
                         pipeline_status,
                         pipeline_status_lock,
@@ -2997,6 +3015,55 @@ async def merge_nodes_and_edges(
 
         if first_exception is not None:
             raise first_exception
+
+    # ===== Phase 2.5: Batch VDB upsert for relationships and added entities =====
+    if relationships_vdb is not None and processed_edges:
+        batch_rel_vdb_data = {}
+        batch_rel_delete_ids = []
+        for edge_data in processed_edges:
+            if edge_data:
+                src, tgt = edge_data["src_id"], edge_data["tgt_id"]
+                if src > tgt:
+                    src, tgt = tgt, src
+                rid = compute_mdhash_id(src + tgt, prefix="rel-")
+                rid_rev = compute_mdhash_id(tgt + src, prefix="rel-")
+                batch_rel_delete_ids.extend([rid, rid_rev])
+                batch_rel_vdb_data[rid] = {
+                    "src_id": src,
+                    "tgt_id": tgt,
+                    "source_id": edge_data.get("source_id", ""),
+                    "content": f"{edge_data.get('keywords', '')}\t{src}\n{tgt}\n{edge_data.get('description', '')}",
+                    "keywords": edge_data.get("keywords", ""),
+                    "description": edge_data.get("description", ""),
+                    "weight": edge_data.get("weight", 1.0),
+                    "file_path": edge_data.get("file_path", ""),
+                }
+        if batch_rel_delete_ids:
+            try:
+                await relationships_vdb.delete(batch_rel_delete_ids)
+            except Exception as e:
+                logger.debug(f"Could not batch delete old relationship vectors: {e}")
+        if batch_rel_vdb_data:
+            logger.info(f"Batch embedding {len(batch_rel_vdb_data)} relationships to VDB")
+            await relationships_vdb.upsert(batch_rel_vdb_data)
+
+    # Batch VDB upsert for entities added during edge processing
+    if entity_vdb is not None and all_added_entities:
+        batch_added_vdb_data = {}
+        for entity_data in all_added_entities:
+            if entity_data and entity_data.get("entity_name"):
+                ename = entity_data["entity_name"]
+                eid = compute_mdhash_id(str(ename), prefix="ent-")
+                batch_added_vdb_data[eid] = {
+                    "entity_name": ename,
+                    "entity_type": entity_data.get("entity_type", "UNKNOWN"),
+                    "content": f"{ename}\n{entity_data.get('description', '')}",
+                    "source_id": entity_data.get("source_id", ""),
+                    "file_path": entity_data.get("file_path", ""),
+                }
+        if batch_added_vdb_data:
+            logger.info(f"Batch embedding {len(batch_added_vdb_data)} added entities to VDB")
+            await entity_vdb.upsert(batch_added_vdb_data)
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     if full_entities_storage and full_relations_storage and doc_id:
