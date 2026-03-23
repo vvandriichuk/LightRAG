@@ -2447,15 +2447,71 @@ async def _merge_edges_then_upsert(
 
 
 def _is_abbreviation_of(short: str, long: str) -> bool:
-    """Check if 'short' could be an abbreviation of 'long'."""
+    """Check if 'short' could be an abbreviation of 'long'.
+
+    Handles both full abbreviations (EU -> EUROPEAN UNION)
+    and partial abbreviations (A. DVORKIN -> ALEXANDER DVORKIN).
+    """
     if len(short) >= len(long) or len(short) < 2:
         return False
-    words = long.split()
-    if len(words) < 2:
+    long_words = long.split()
+    if len(long_words) < 2:
         return False
-    # Check if first letters of words match the abbreviation
-    initials = "".join(w[0] for w in words if w)
-    return initials == short
+
+    # Full abbreviation: initials match (EU -> EUROPEAN UNION)
+    initials = "".join(w[0] for w in long_words if w)
+    if initials == short:
+        return True
+
+    # Partial abbreviation: some words are initials, others are full
+    # e.g. "A. DVORKIN" -> "ALEXANDER DVORKIN", "A DVORKIN" -> "ALEXANDER DVORKIN"
+    short_words = short.replace(".", "").split()
+    if len(short_words) < 2 or len(short_words) > len(long_words):
+        return False
+
+    # Try to match short_words against long_words allowing initial matching
+    long_idx = 0
+    matched = 0
+    for sw in short_words:
+        while long_idx < len(long_words):
+            lw = long_words[long_idx]
+            long_idx += 1
+            if sw == lw:
+                matched += 1
+                break
+            elif len(sw) == 1 and lw.startswith(sw):
+                matched += 1
+                break
+        else:
+            break
+
+    return matched == len(short_words)
+
+
+def _words_are_subset(shorter: str, longer: str) -> bool:
+    """Check if all words in 'shorter' appear in 'longer' preserving order.
+
+    Handles cases like ALEXANDER DVORKIN being a subset of
+    ALEXANDER LEONIDOVICH DVORKIN.
+    """
+    short_words = shorter.split()
+    long_words = longer.split()
+    if len(short_words) < 2 or len(short_words) >= len(long_words):
+        return False
+
+    long_idx = 0
+    matched = 0
+    for sw in short_words:
+        while long_idx < len(long_words):
+            if long_words[long_idx] == sw:
+                matched += 1
+                long_idx += 1
+                break
+            long_idx += 1
+        else:
+            break
+
+    return matched == len(short_words)
 
 
 def _cluster_similar_names(
@@ -2487,24 +2543,23 @@ def _cluster_similar_names(
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             a, b = names[i], names[j]
-            # Skip comparison if length difference is too large (unless abbreviation)
-            len_ratio = min(len(a), len(b)) / max(len(a), len(b)) if max(len(a), len(b)) > 0 else 1
+            shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+
+            # Skip comparison if length difference is too large (unless abbreviation/subset)
+            len_ratio = len(shorter) / len(longer) if len(longer) > 0 else 1
             if len_ratio < 0.3:
-                # Only check abbreviation for very different lengths
-                if _is_abbreviation_of(a, b) or _is_abbreviation_of(b, a):
+                if _is_abbreviation_of(shorter, longer):
                     union(a, b)
                 continue
 
             similarity = difflib.SequenceMatcher(None, a, b).ratio()
             if similarity >= threshold:
                 union(a, b)
-            elif _is_abbreviation_of(a, b) or _is_abbreviation_of(b, a):
+            elif _is_abbreviation_of(shorter, longer):
                 union(a, b)
-            # Check if one name is a substring of the other (partial name match)
-            elif len(a) >= 3 and len(b) >= 3:
-                shorter, longer = (a, b) if len(a) < len(b) else (b, a)
-                if shorter in longer:
-                    union(a, b)
+            # Word-level subset: all words of shorter name appear in longer name
+            elif _words_are_subset(shorter, longer):
+                union(a, b)
 
     clusters_map = defaultdict(list)
     for name in names:
