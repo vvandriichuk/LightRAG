@@ -40,7 +40,12 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
-      - ./lightrag:/app/lightrag
+      # RBAC: mount only modified files to preserve built-in WebUI
+      - ./lightrag/api/auth.py:/app/lightrag/api/auth.py
+      - ./lightrag/api/utils_api.py:/app/lightrag/api/utils_api.py
+      - ./lightrag/api/lightrag_server.py:/app/lightrag/api/lightrag_server.py
+      - ./lightrag/api/routers/document_routes.py:/app/lightrag/api/routers/document_routes.py
+      - ./lightrag/api/routers/graph_routes.py:/app/lightrag/api/routers/graph_routes.py
     env_file:
       - .env
     deploy:
