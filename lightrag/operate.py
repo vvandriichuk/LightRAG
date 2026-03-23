@@ -3,6 +3,7 @@ from functools import partial
 from pathlib import Path
 
 import asyncio
+import difflib
 import json
 import json_repair
 from typing import Any, AsyncIterator, overload, Literal
@@ -64,6 +65,8 @@ from lightrag.constants import (
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    DEFAULT_ENABLE_ENTITY_DEDUP,
+    DEFAULT_ENTITY_DEDUP_THRESHOLD,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
@@ -393,7 +396,7 @@ async def _handle_single_entity_extraction(
     try:
         entity_name = sanitize_and_normalize_extracted_text(
             record_attributes[1], remove_inner_quotes=True
-        )
+        ).upper()
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
@@ -482,10 +485,10 @@ async def _handle_single_relationship_extraction(
     try:
         source = sanitize_and_normalize_extracted_text(
             record_attributes[1], remove_inner_quotes=True
-        )
+        ).upper()
         target = sanitize_and_normalize_extracted_text(
             record_attributes[2], remove_inner_quotes=True
-        )
+        ).upper()
 
         # Validate entity names after all cleaning steps
         if not source:
@@ -2440,6 +2443,256 @@ async def _merge_edges_then_upsert(
     return edge_data
 
 
+# ===== Entity Deduplication =====
+
+
+def _is_abbreviation_of(short: str, long: str) -> bool:
+    """Check if 'short' could be an abbreviation of 'long'."""
+    if len(short) >= len(long) or len(short) < 2:
+        return False
+    words = long.split()
+    if len(words) < 2:
+        return False
+    # Check if first letters of words match the abbreviation
+    initials = "".join(w[0] for w in words if w)
+    return initials == short
+
+
+def _cluster_similar_names(
+    names: list[str], threshold: float
+) -> list[list[str]]:
+    """Cluster entity names by string similarity and abbreviation patterns using Union-Find."""
+    if len(names) <= 1:
+        return []
+
+    parent = {name: name for name in names}
+    rank = {name: 0 for name in names}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: str, y: str) -> None:
+        px, py = find(x), find(y)
+        if px == py:
+            return
+        if rank[px] < rank[py]:
+            px, py = py, px
+        parent[py] = px
+        if rank[px] == rank[py]:
+            rank[px] += 1
+
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = names[i], names[j]
+            # Skip comparison if length difference is too large (unless abbreviation)
+            len_ratio = min(len(a), len(b)) / max(len(a), len(b)) if max(len(a), len(b)) > 0 else 1
+            if len_ratio < 0.3:
+                # Only check abbreviation for very different lengths
+                if _is_abbreviation_of(a, b) or _is_abbreviation_of(b, a):
+                    union(a, b)
+                continue
+
+            similarity = difflib.SequenceMatcher(None, a, b).ratio()
+            if similarity >= threshold:
+                union(a, b)
+            elif _is_abbreviation_of(a, b) or _is_abbreviation_of(b, a):
+                union(a, b)
+            # Check if one name is a substring of the other (partial name match)
+            elif len(a) >= 3 and len(b) >= 3:
+                shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+                if shorter in longer:
+                    union(a, b)
+
+    clusters_map = defaultdict(list)
+    for name in names:
+        clusters_map[find(name)].append(name)
+
+    return [cluster for cluster in clusters_map.values() if len(cluster) > 1]
+
+
+def _pick_canonical_name(
+    cluster: list[str], all_nodes: dict[str, list]
+) -> str:
+    """Pick the best canonical name from a cluster: prefer longest name with most occurrences."""
+    # Score by: number of mentions (from all_nodes) * 1000 + name length
+    scored = []
+    for name in cluster:
+        mention_count = len(all_nodes.get(name, []))
+        scored.append((mention_count * 1000 + len(name), name))
+    scored.sort(reverse=True)
+    return scored[0][1]
+
+
+async def _llm_resolve_entity_clusters(
+    clusters: list[list[str]],
+    global_config: dict,
+    llm_response_cache: BaseKVStorage | None = None,
+) -> dict[str, str]:
+    """Use LLM to resolve ambiguous entity clusters. Returns mapping: variant -> canonical."""
+    if not clusters:
+        return {}
+
+    # Format clusters for the prompt
+    lines = []
+    for i, cluster in enumerate(clusters, 1):
+        lines.append(f"{i}. {' | '.join(cluster)}")
+    entity_groups = "\n".join(lines)
+
+    prompt = PROMPTS["entity_resolution_prompt"].format(entity_groups=entity_groups)
+
+    use_llm_func = global_config["llm_model_func"]
+    use_llm_func = partial(use_llm_func, _priority=7)
+
+    if llm_response_cache:
+        result, _ = await use_llm_func_with_cache(
+            "entity_resolution",
+            use_llm_func,
+            llm_response_cache,
+            prompt,
+        )
+    else:
+        result = await use_llm_func(prompt)
+
+    # Parse JSON response
+    result = remove_think_tags(result)
+    name_mapping = {}
+    try:
+        parsed = json_repair.loads(result)
+        if not isinstance(parsed, dict):
+            logger.warning("Entity resolution LLM returned non-dict response")
+            return {}
+
+        for idx_str, resolution in parsed.items():
+            idx = int(idx_str) - 1
+            if idx < 0 or idx >= len(clusters):
+                continue
+            cluster = clusters[idx]
+
+            if not isinstance(resolution, dict):
+                continue
+
+            canonical = resolution.get("canonical")
+            if canonical and isinstance(canonical, str):
+                canonical = canonical.upper()
+                for name in cluster:
+                    if name != canonical:
+                        name_mapping[name] = canonical
+            # If split — don't merge, leave as separate entities
+    except Exception as e:
+        logger.warning(f"Failed to parse entity resolution LLM response: {e}")
+
+    return name_mapping
+
+
+def _apply_name_mapping(
+    all_nodes: dict[str, list],
+    all_edges: dict[tuple, list],
+    name_mapping: dict[str, str],
+) -> tuple[dict[str, list], dict[tuple, list]]:
+    """Apply entity name mapping to nodes and edges."""
+    if not name_mapping:
+        return all_nodes, all_edges
+
+    # Remap nodes
+    resolved_nodes = defaultdict(list)
+    for name, entities in all_nodes.items():
+        canonical = name_mapping.get(name, name)
+        for entity in entities:
+            entity["entity_name"] = canonical
+        resolved_nodes[canonical].extend(entities)
+
+    # Remap edges
+    resolved_edges = defaultdict(list)
+    for (src, tgt), edges in all_edges.items():
+        new_src = name_mapping.get(src, src)
+        new_tgt = name_mapping.get(tgt, tgt)
+        for edge in edges:
+            edge["src_id"] = new_src
+            edge["tgt_id"] = new_tgt
+        new_key = tuple(sorted((new_src, new_tgt)))
+        # Skip self-referencing edges created by merging
+        if new_src == new_tgt:
+            continue
+        resolved_edges[new_key].extend(edges)
+
+    return dict(resolved_nodes), dict(resolved_edges)
+
+
+async def resolve_entity_duplicates(
+    all_nodes: dict[str, list],
+    all_edges: dict[tuple, list],
+    global_config: dict,
+    llm_response_cache: BaseKVStorage | None = None,
+) -> tuple[dict[str, list], dict[tuple, list]]:
+    """Post-extraction entity resolution: cluster similar names and merge duplicates.
+
+    Three-level dedup:
+    1. Upper-case normalization (already applied during extraction)
+    2. Fuzzy string matching + abbreviation/substring detection
+    3. LLM-based resolution for ambiguous clusters
+    """
+    entity_names = list(all_nodes.keys())
+    if len(entity_names) <= 1:
+        return all_nodes, all_edges
+
+    threshold = global_config.get("entity_dedup_threshold", DEFAULT_ENTITY_DEDUP_THRESHOLD)
+
+    # Find clusters of similar names
+    clusters = _cluster_similar_names(entity_names, threshold)
+    if not clusters:
+        logger.info("Entity dedup: no similar entity names found")
+        return all_nodes, all_edges
+
+    logger.info(f"Entity dedup: found {len(clusters)} clusters of similar names")
+
+    # Separate simple clusters (high similarity) from ambiguous ones (abbreviations, substrings)
+    simple_mapping = {}
+    ambiguous_clusters = []
+
+    for cluster in clusters:
+        # Check if all pairs have high string similarity
+        all_high_similarity = True
+        for i in range(len(cluster)):
+            for j in range(i + 1, len(cluster)):
+                sim = difflib.SequenceMatcher(None, cluster[i], cluster[j]).ratio()
+                if sim < threshold:
+                    all_high_similarity = False
+                    break
+            if not all_high_similarity:
+                break
+
+        if all_high_similarity:
+            # Simple case: pick canonical by frequency/length
+            canonical = _pick_canonical_name(cluster, all_nodes)
+            for name in cluster:
+                if name != canonical:
+                    simple_mapping[name] = canonical
+            logger.info(f"Entity dedup (fuzzy): {cluster} -> '{canonical}'")
+        else:
+            ambiguous_clusters.append(cluster)
+
+    # LLM resolution for ambiguous clusters (abbreviations, partial names)
+    llm_mapping = {}
+    if ambiguous_clusters:
+        logger.info(f"Entity dedup: sending {len(ambiguous_clusters)} ambiguous clusters to LLM")
+        llm_mapping = await _llm_resolve_entity_clusters(
+            ambiguous_clusters, global_config, llm_response_cache
+        )
+        for variant, canonical in llm_mapping.items():
+            logger.info(f"Entity dedup (LLM): '{variant}' -> '{canonical}'")
+
+    # Merge all mappings
+    full_mapping = {**simple_mapping, **llm_mapping}
+    if not full_mapping:
+        return all_nodes, all_edges
+
+    logger.info(f"Entity dedup: merging {len(full_mapping)} entity name variants")
+    return _apply_name_mapping(all_nodes, all_edges, full_mapping)
+
+
 async def merge_nodes_and_edges(
     chunk_results: list,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2503,6 +2756,13 @@ async def merge_nodes_and_edges(
         for edge_key, edges in maybe_edges.items():
             sorted_edge_key = tuple(sorted(edge_key))
             all_edges[sorted_edge_key].extend(edges)
+
+    # ===== Entity Deduplication Phase =====
+    enable_entity_dedup = global_config.get("enable_entity_dedup", DEFAULT_ENABLE_ENTITY_DEDUP)
+    if enable_entity_dedup and len(all_nodes) > 1:
+        all_nodes, all_edges = await resolve_entity_duplicates(
+            dict(all_nodes), dict(all_edges), global_config, llm_response_cache
+        )
 
     total_entities_count = len(all_nodes)
     total_relations_count = len(all_edges)

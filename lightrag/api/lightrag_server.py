@@ -1060,6 +1060,14 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # Create separate query LLM function if configured
+    query_binding = args.llm_binding_for_query or args.llm_binding
+    llm_model_func_for_query = None
+    llm_model_name_for_query = None
+    if args.llm_model_for_query:
+        llm_model_func_for_query = create_llm_model_func(query_binding)
+        llm_model_name_for_query = args.llm_model_for_query
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1067,6 +1075,8 @@ def create_app(args):
             workspace=args.workspace,
             llm_model_func=create_llm_model_func(args.llm_binding),
             llm_model_name=args.llm_model,
+            llm_model_func_for_query=llm_model_func_for_query,
+            llm_model_name_for_query=llm_model_name_for_query,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.summary_max_tokens,
             summary_context_size=args.summary_context_size,
@@ -1087,6 +1097,8 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
+            enable_entity_dedup=args.enable_entity_dedup,
+            entity_dedup_threshold=args.entity_dedup_threshold,
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,

@@ -15,7 +15,13 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 1.  **Entity Extraction & Output:**
     *   **Identification:** Identify clearly defined and meaningful entities in the input text.
     *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+        *   `entity_name`: The canonical name of the entity. Rules for naming:
+            - Use **title case** (capitalize significant words).
+            - Always prefer the **full formal name** over abbreviations or acronyms (e.g., "European Union" not "EU", "United Nations" not "UN").
+            - Use **nominative case** (base grammatical form) for all languages (e.g., "Moscow" not "Moscow's"; "Москва" not "Москвы" or "Москве").
+            - Use **singular form** (e.g., "Document" not "Documents").
+            - If the same entity appears with different forms, abbreviations, or morphological variants in the text, always use the **same full canonical name** for all occurrences.
+            - Ensure **consistent naming** across the entire extraction process.
         *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
         *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
     *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
@@ -26,8 +32,8 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
     *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
         *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
     *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+        *   `source_entity`: The canonical name of the source entity. Must exactly match the entity name used in entity extraction (full formal name, title case, nominative case, singular form).
+        *   `target_entity`: The canonical name of the target entity. Must exactly match the entity name used in entity extraction (full formal name, title case, nominative case, singular form).
         *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
         *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
     *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
@@ -95,6 +101,31 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
 7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+
+<Output>
+"""
+
+PROMPTS["entity_resolution_prompt"] = """---Task---
+You are an entity resolution specialist. Given groups of entity names that may refer to the same real-world entity, determine the canonical (preferred) name for each group.
+
+---Rules---
+1. Choose the most complete, formal name as canonical (e.g., "EUROPEAN UNION" over "EU").
+2. Use nominative case / base grammatical form (e.g., "МОСКВА" not "МОСКВЫ").
+3. Use singular form.
+4. If names in a group refer to DIFFERENT entities, set canonical to null and list each unique entity in the "split" field.
+5. Respond ONLY with valid JSON, no explanations or extra text.
+
+---Input Groups---
+{entity_groups}
+
+---Output Format---
+Return a JSON object where keys are group numbers (as strings) and values are objects with:
+- "canonical": the preferred name (or null if the group should be split)
+- "aliases": list of other names that map to the canonical name
+- "split": (only if canonical is null) list of distinct entity names
+
+Example:
+{{"1": {{"canonical": "EUROPEAN UNION", "aliases": ["EU", "E.U."]}}, "2": {{"canonical": null, "split": ["APPLE INC", "APPLE FRUIT"]}}}}
 
 <Output>
 """

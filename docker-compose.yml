@@ -44,8 +44,10 @@ services:
       - ./lightrag/api/auth.py:/app/lightrag/api/auth.py
       - ./lightrag/api/utils_api.py:/app/lightrag/api/utils_api.py
       - ./lightrag/api/lightrag_server.py:/app/lightrag/api/lightrag_server.py
+      - ./lightrag/api/config.py:/app/lightrag/api/config.py
       - ./lightrag/api/routers/document_routes.py:/app/lightrag/api/routers/document_routes.py
       - ./lightrag/api/routers/graph_routes.py:/app/lightrag/api/routers/graph_routes.py
+      - ./lightrag/lightrag.py:/app/lightrag/lightrag.py
     env_file:
       - .env
     deploy:

@@ -15,6 +15,10 @@ DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
 DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
 
+# Entity deduplication settings
+DEFAULT_ENABLE_ENTITY_DEDUP = True
+DEFAULT_ENTITY_DEDUP_THRESHOLD = 0.85
+
 # Number of description fragments to trigger LLM summary
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
 # Max description token size to trigger LLM summary

@@ -54,6 +54,8 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_ENABLE_ENTITY_DEDUP,
+    DEFAULT_ENTITY_DEDUP_THRESHOLD,
 )
 from lightrag.utils import get_env_value
 
@@ -247,6 +249,18 @@ class LightRAG:
         )
     )
 
+    enable_entity_dedup: bool = field(
+        default=get_env_value("ENABLE_ENTITY_DEDUP", DEFAULT_ENABLE_ENTITY_DEDUP, bool)
+    )
+    """Enable post-extraction entity deduplication (fuzzy matching + LLM resolution)."""
+
+    entity_dedup_threshold: float = field(
+        default=get_env_value(
+            "ENTITY_DEDUP_THRESHOLD", DEFAULT_ENTITY_DEDUP_THRESHOLD, float
+        )
+    )
+    """Similarity threshold for fuzzy entity name matching (0.0-1.0)."""
+
     # Text chunking
     # ---
 
@@ -341,10 +355,19 @@ class LightRAG:
     # ---
 
     llm_model_func: Callable[..., object] | None = field(default=None)
-    """Function for interacting with the large language model (LLM). Must be set before use."""
+    """Function for interacting with the large language model (LLM). Must be set before use.
+    Used for indexing (entity extraction, summarization). Also used for queries if llm_model_func_for_query is not set."""
 
     llm_model_name: str = field(default="gpt-4o-mini")
-    """Name of the LLM model used for generating responses."""
+    """Name of the LLM model used for indexing (entity extraction, summarization)."""
+
+    llm_model_func_for_query: Callable[..., object] | None = field(default=None)
+    """Optional separate LLM function for query operations.
+    If set, queries will use this function instead of llm_model_func.
+    This allows using a cheaper/faster model for indexing and a more capable model for queries."""
+
+    llm_model_name_for_query: str | None = field(default=None)
+    """Name of the LLM model used for query operations. Only used when llm_model_func_for_query is set."""
 
     summary_max_tokens: int = field(
         default=int(os.getenv("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
@@ -694,6 +717,20 @@ class LightRAG:
                 **self.llm_model_kwargs,
             )
         )
+
+        # Initialize separate query LLM function if provided
+        if self.llm_model_func_for_query is not None:
+            self.llm_model_func_for_query = priority_limit_async_func_call(
+                self.llm_model_max_async,
+                llm_timeout=self.default_llm_timeout,
+                queue_name="LLM query func",
+            )(
+                partial(
+                    self.llm_model_func_for_query,  # type: ignore
+                    hashing_kv=hashing_kv,
+                    **self.llm_model_kwargs,
+                )
+            )
 
         self._storages_status = StoragesStatus.CREATED
 
@@ -2681,6 +2718,12 @@ class LightRAG:
         """
         global_config = asdict(self)
 
+        # Use separate query LLM function if configured
+        if self.llm_model_func_for_query is not None:
+            global_config["llm_model_func"] = self.llm_model_func_for_query
+            if self.llm_model_name_for_query is not None:
+                global_config["llm_model_name"] = self.llm_model_name_for_query
+
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
             mode=param.mode,
@@ -2798,6 +2841,12 @@ class LightRAG:
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = asdict(self)
+
+        # Use separate query LLM function if configured
+        if self.llm_model_func_for_query is not None:
+            global_config["llm_model_func"] = self.llm_model_func_for_query
+            if self.llm_model_name_for_query is not None:
+                global_config["llm_model_name"] = self.llm_model_name_for_query
 
         try:
             query_result = None

@@ -358,6 +358,9 @@ def parse_args() -> argparse.Namespace:
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
+    # Optional separate model for query operations (uses LLM_MODEL if not set)
+    args.llm_model_for_query = get_env_value("LLM_MODEL_FOR_QUERY", None, special_none=True)
+    args.llm_binding_for_query = get_env_value("LLM_BINDING_FOR_QUERY", None, special_none=True)
     # EMBEDDING_MODEL defaults to None - each binding will use its own default model
     # e.g., OpenAI uses "text-embedding-3-small", Jina uses "jina-embeddings-v4"
     args.embedding_model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
@@ -375,6 +378,10 @@ def parse_args() -> argparse.Namespace:
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
+
+    # Inject entity dedup configuration
+    args.enable_entity_dedup = get_env_value("ENABLE_ENTITY_DEDUP", True, bool)
+    args.entity_dedup_threshold = get_env_value("ENTITY_DEDUP_THRESHOLD", 0.85, float)
 
     # Set document_loading_engine from --docling flag
     if args.docling:
