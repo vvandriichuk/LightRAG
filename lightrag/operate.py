@@ -88,19 +88,27 @@ GARBAGE_ENTITY_PREPOSITIONS = frozenset(
 GARBAGE_ENTITY_MAX_WORDS = 7
 GARBAGE_ENTITY_PATTERNS = [
     re.compile(r"'S\b"),
-    re.compile(r"\bAGENT OF\b"),
-    re.compile(r"\bMEMBER OF\b"),
-    re.compile(r"\bGOAL OF\b"),
-    re.compile(r"\bPART OF\b"),
-    re.compile(r"\bFOLLOWER OF\b"),
-    re.compile(r"\bLEADER OF\b"),
+    re.compile(r"\bAGENTS?\s+OF\b"),
+    re.compile(r"\bMEMBERS?\s+OF\b"),
+    re.compile(r"\bGOALS?\s+OF\b"),
+    re.compile(r"\bPART\s+OF\b"),
+    re.compile(r"\bFOLLOWERS?\s+OF\b"),
+    re.compile(r"\bLEADERS?\s+OF\b"),
+    re.compile(r"\bTHEIR\b"),
+    re.compile(r"\bHIS\b"),
+    re.compile(r"\bHER\b"),
     re.compile(r"\b\d{4}:\s"),
     re.compile(r"\bSECT\.\s*\d"),
 ]
 
+TITLE_PREFIXES = frozenset({"DR.", "DR", "MR.", "MR", "MRS.", "MRS", "MS.", "MS", "PROF.", "PROF", "SIR", "SAINT", "ST."})
+
 
 def _is_garbage_entity(name: str) -> bool:
     """Return True if entity name matches known garbage patterns."""
+    # Commas in entity names indicate descriptive phrases
+    if "," in name:
+        return True
     words = name.split()
     if len(words) > GARBAGE_ENTITY_MAX_WORDS:
         return True
@@ -113,6 +121,14 @@ def _is_garbage_entity(name: str) -> bool:
         if pattern.search(name):
             return True
     return False
+
+
+def _strip_title_prefix(name: str) -> str:
+    """Strip title prefixes like DR., MR., PROF. from entity names."""
+    words = name.split()
+    if len(words) >= 2 and words[0] in TITLE_PREFIXES:
+        return " ".join(words[1:])
+    return name
 
 
 # ===== Transliteration Detection (Step 2) =====
@@ -543,6 +559,9 @@ async def _handle_single_entity_extraction(
                 f"Empty entity name found after sanitization. Original: '{record_attributes[1]}'"
             )
             return None
+
+        # Strip title prefixes (DR., MR., PROF., etc.)
+        entity_name = _strip_title_prefix(entity_name)
 
         # Filter garbage entities (descriptive phrases, document titles, etc.)
         if _is_garbage_entity(entity_name):
@@ -2621,28 +2640,29 @@ def _is_abbreviation_of(short: str, long: str) -> bool:
         return True
 
     # Partial abbreviation: some words are initials, others are full
-    # e.g. "A. DVORKIN" -> "ALEXANDER DVORKIN", "A DVORKIN" -> "ALEXANDER DVORKIN"
+    # e.g. "A. DVORKIN" -> "ALEXANDER DVORKIN", "A. L. DVORKIN" -> "ALEXANDER DVORKIN"
     short_words = short.replace(".", "").split()
-    if len(short_words) < 2 or len(short_words) > len(long_words):
+    if len(short_words) < 2:
         return False
 
-    # Try to match short_words against long_words allowing initial matching
-    long_idx = 0
-    matched = 0
-    for sw in short_words:
-        while long_idx < len(long_words):
-            lw = long_words[long_idx]
-            long_idx += 1
-            if sw == lw:
-                matched += 1
-                break
-            elif len(sw) == 1 and lw.startswith(sw):
-                matched += 1
-                break
-        else:
-            break
+    # Separate initials and full words in the short form
+    short_initials = [w for w in short_words if len(w) == 1]
+    short_full = [w for w in short_words if len(w) > 1]
 
-    return matched == len(short_words)
+    if not short_full or not short_initials:
+        return False
+
+    # All full words from short must appear in long (typically surname)
+    long_words_set = set(long_words)
+    if not all(w in long_words_set for w in short_full):
+        return False
+
+    # At least one initial must match a first letter of a word in long
+    long_first_letters = {w[0] for w in long_words if w}
+    if not any(init in long_first_letters for init in short_initials):
+        return False
+
+    return True
 
 
 def _words_are_subset(shorter: str, longer: str) -> bool:
