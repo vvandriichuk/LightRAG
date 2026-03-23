@@ -48,6 +48,9 @@ services:
       - ./lightrag/api/routers/document_routes.py:/app/lightrag/api/routers/document_routes.py
       - ./lightrag/api/routers/graph_routes.py:/app/lightrag/api/routers/graph_routes.py
       - ./lightrag/lightrag.py:/app/lightrag/lightrag.py
+      - ./lightrag/operate.py:/app/lightrag/operate.py
+      - ./lightrag/prompt.py:/app/lightrag/prompt.py
+      - ./lightrag/constants.py:/app/lightrag/constants.py
     env_file:
       - .env
     deploy:
