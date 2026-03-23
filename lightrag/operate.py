@@ -2649,11 +2649,19 @@ def _words_are_subset(shorter: str, longer: str) -> bool:
     """Check if all words in 'shorter' appear in 'longer' preserving order.
 
     Handles cases like ALEXANDER DVORKIN being a subset of
-    ALEXANDER LEONIDOVICH DVORKIN.
+    ALEXANDER LEONIDOVICH DVORKIN, and single-word surname matches
+    like DVORKIN in ALEXANDER DVORKIN (2-3 word names only).
     """
     short_words = shorter.split()
     long_words = longer.split()
-    if len(short_words) < 2 or len(short_words) >= len(long_words):
+    if len(short_words) >= len(long_words):
+        return False
+
+    # Single word: allow if it matches the last word (surname) of a 2-3 word name
+    if len(short_words) == 1:
+        return len(long_words) <= 3 and short_words[0] == long_words[-1]
+
+    if len(short_words) < 2:
         return False
 
     long_idx = 0
