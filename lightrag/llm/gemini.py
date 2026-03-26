@@ -134,6 +134,14 @@ def _build_generation_config(
     if keyword_extraction and not config_data.get("response_mime_type"):
         config_data["response_mime_type"] = "application/json"
 
+    # Convert safety_settings dict to list of SafetySetting objects if needed
+    raw_safety = config_data.get("safety_settings")
+    if isinstance(raw_safety, dict):
+        config_data["safety_settings"] = [
+            types.SafetySetting(category=cat, threshold=thresh)
+            for cat, thresh in raw_safety.items()
+        ]
+
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
         key: value
