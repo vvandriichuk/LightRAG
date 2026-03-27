@@ -51,6 +51,7 @@ services:
       - ./lightrag/operate.py:/app/lightrag/operate.py
       - ./lightrag/prompt.py:/app/lightrag/prompt.py
       - ./lightrag/constants.py:/app/lightrag/constants.py
+      - ./lightrag/llm/gemini.py:/app/lightrag/llm/gemini.py
     env_file:
       - .env
     deploy:
