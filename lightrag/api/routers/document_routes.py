@@ -3362,37 +3362,44 @@ def create_document_routes(
                     if status_doc is None:
                         continue
 
-                    if hasattr(status_doc, "status") and status_doc.status == DocStatus.FAILED:
-                        # Consistency check: ensure document content exists
-                        content_data = await rag.full_docs.get_by_id(doc_id)
-                        if not content_data:
-                            logger.warning(f"Skipping retry for {doc_id}: no content in full_docs")
-                            continue
+                    # get_by_id returns dict for PG storage, DocProcessingStatus for others
+                    doc_status = status_doc.get("status") if isinstance(status_doc, dict) else getattr(status_doc, "status", None)
+                    if doc_status != DocStatus.FAILED and doc_status != DocStatus.FAILED.value:
+                        continue
 
-                        # Use the same chunk sanitization as the main pipeline
-                        chunks_list: list[str] = []
-                        if isinstance(getattr(status_doc, "chunks_list", None), list):
-                            chunks_list = [
-                                chunk_id
-                                for chunk_id in status_doc.chunks_list
-                                if isinstance(chunk_id, str) and chunk_id
-                            ]
-                        chunks_count = len(chunks_list)
+                    # Consistency check: ensure document content exists
+                    content_data = await rag.full_docs.get_by_id(doc_id)
+                    if not content_data:
+                        logger.warning(f"Skipping retry for {doc_id}: no content in full_docs")
+                        continue
 
-                        docs_to_reset[doc_id] = {
-                            "status": DocStatus.PENDING,
-                            "content_summary": status_doc.content_summary,
-                            "content_length": status_doc.content_length,
-                            "chunks_count": chunks_count,
-                            "chunks_list": chunks_list,
-                            "created_at": status_doc.created_at,
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                            "file_path": getattr(status_doc, "file_path", None) or "unknown_source",
-                            "track_id": getattr(status_doc, "track_id", ""),
-                            "error_msg": "",
-                            "metadata": {},
-                        }
-                        reset_count += 1
+                    # Use the same chunk sanitization as the main pipeline
+                    raw_chunks = status_doc.get("chunks_list", []) if isinstance(status_doc, dict) else getattr(status_doc, "chunks_list", [])
+                    chunks_list: list[str] = []
+                    if isinstance(raw_chunks, list):
+                        chunks_list = [
+                            chunk_id
+                            for chunk_id in raw_chunks
+                            if isinstance(chunk_id, str) and chunk_id
+                        ]
+                    chunks_count = len(chunks_list)
+
+                    _get = (lambda k, d=None: status_doc.get(k, d)) if isinstance(status_doc, dict) else (lambda k, d=None: getattr(status_doc, k, d))
+
+                    docs_to_reset[doc_id] = {
+                        "status": DocStatus.PENDING,
+                        "content_summary": _get("content_summary", ""),
+                        "content_length": _get("content_length", 0),
+                        "chunks_count": chunks_count,
+                        "chunks_list": chunks_list,
+                        "created_at": _get("created_at", ""),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "file_path": _get("file_path") or "unknown_source",
+                        "track_id": _get("track_id", ""),
+                        "error_msg": "",
+                        "metadata": {},
+                    }
+                    reset_count += 1
 
                 if reset_count == 0:
                     return RetrySelectedResponse(
