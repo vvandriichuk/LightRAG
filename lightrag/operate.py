@@ -41,6 +41,7 @@ from lightrag.utils import (
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
+    ContentBlockedError,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -3733,6 +3734,14 @@ async def extract_entities(
 
             try:
                 return await _process_single_content(chunk)
+            except ContentBlockedError as e:
+                nonlocal processed_chunks
+                chunk_id = chunk[0]
+                processed_chunks += 1
+                logger.warning(
+                    f"Chunk {processed_chunks}/{total_chunks} {chunk_id} blocked by content filter, skipping: {e}"
+                )
+                return ({}, {})  # Return empty nodes and edges
             except Exception as e:
                 chunk_id = chunk[0]  # Extract chunk_id from chunk[0]
                 prefixed_exception = create_prefixed_exception(e, chunk_id)

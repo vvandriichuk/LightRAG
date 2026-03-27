@@ -23,6 +23,7 @@ from tenacity import (
 )
 
 from lightrag.utils import (
+    ContentBlockedError,
     logger,
     remove_think_tags,
     safe_unicode_decode,
@@ -422,6 +423,15 @@ async def gemini_complete_if_cache(
         final_text = regular_text or ""
 
     if not final_text:
+        # Check if content was blocked at the platform level (non-retryable)
+        prompt_feedback = getattr(response, "prompt_feedback", None)
+        block_reason = getattr(prompt_feedback, "block_reason", None) if prompt_feedback else None
+
+        if block_reason and str(block_reason) != "BLOCKED_REASON_UNSPECIFIED":
+            raise ContentBlockedError(
+                f"Gemini blocked content: {block_reason.value if hasattr(block_reason, 'value') else block_reason}. "
+                "This is a platform-level restriction that cannot be bypassed."
+            )
         raise InvalidResponseError("Gemini response did not contain any text content.")
 
     if "\\u" in final_text:

@@ -588,6 +588,16 @@ def parse_cache_key(cache_key: str) -> tuple[str, str, str] | None:
 
 
 # Custom exception classes
+class ContentBlockedError(Exception):
+    """Raised when an LLM blocks content due to platform-level restrictions.
+
+    This error is NOT retryable — the content will always be blocked regardless of retries.
+    Applicable to any LLM provider (Gemini PROHIBITED_CONTENT, OpenAI content filter, etc.).
+    """
+
+    pass
+
+
 class QueueFullError(Exception):
     """Raised when the queue is full and the wait times out"""
 
