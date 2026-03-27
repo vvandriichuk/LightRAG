@@ -433,6 +433,49 @@ class DeleteDocRequest(BaseModel):
         return validated_ids
 
 
+class RetrySelectedRequest(BaseModel):
+    """Request model for retrying selected documents."""
+
+    doc_ids: List[str] = Field(..., description="The IDs of the documents to retry.")
+
+    @field_validator("doc_ids", mode="after")
+    @classmethod
+    def validate_doc_ids(cls, doc_ids: List[str]) -> List[str]:
+        if not doc_ids:
+            raise ValueError("Document IDs list cannot be empty")
+
+        validated_ids = []
+        for doc_id in doc_ids:
+            if not doc_id or not doc_id.strip():
+                raise ValueError("Document ID cannot be empty")
+            validated_ids.append(doc_id.strip())
+
+        if len(validated_ids) != len(set(validated_ids)):
+            raise ValueError("Document IDs must be unique")
+
+        return validated_ids
+
+
+class RetrySelectedResponse(BaseModel):
+    """Response model for retrying selected documents."""
+
+    status: Literal["retry_started", "busy", "no_documents"] = Field(
+        description="Status of the retry operation"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+    doc_count: int = Field(default=0, description="Number of documents queued for retry")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "status": "retry_started",
+                "message": "Retry initiated for 5 selected documents",
+                "doc_count": 5,
+            }
+        }
+    )
+
+
 class DeleteEntityRequest(BaseModel):
     entity_name: str = Field(..., description="The name of the entity to delete.")
 
@@ -3264,6 +3307,112 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/retry_selected",
+        response_model=RetrySelectedResponse,
+        dependencies=[Depends(combined_auth), Depends(write_auth)],
+    )
+    async def retry_selected_documents(
+        request: RetrySelectedRequest,
+        background_tasks: BackgroundTasks,
+    ):
+        """
+        Retry processing for specific selected documents.
+
+        Resets the status of the specified documents to PENDING and triggers
+        the processing pipeline. Only documents in FAILED status will be reset.
+
+        Args:
+            request: Request containing list of document IDs to retry.
+            background_tasks: FastAPI BackgroundTasks for async processing.
+
+        Returns:
+            RetrySelectedResponse with operation status.
+        """
+        try:
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_namespace_lock,
+            )
+
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            async with pipeline_status_lock:
+                if pipeline_status.get("busy", False):
+                    return RetrySelectedResponse(
+                        status="busy",
+                        message="Cannot retry documents while pipeline is busy",
+                    )
+
+                # Collect documents to reset while holding the lock
+                # to prevent race conditions with concurrent pipeline starts
+                reset_count = 0
+                docs_to_reset = {}
+
+                for doc_id in request.doc_ids:
+                    status_doc = await rag.doc_status.get_by_id(doc_id)
+                    if status_doc is None:
+                        continue
+
+                    if hasattr(status_doc, "status") and status_doc.status == DocStatus.FAILED:
+                        # Consistency check: ensure document content exists
+                        content_data = await rag.full_docs.get_by_id(doc_id)
+                        if not content_data:
+                            logger.warning(f"Skipping retry for {doc_id}: no content in full_docs")
+                            continue
+
+                        # Use the same chunk sanitization as the main pipeline
+                        chunks_list: list[str] = []
+                        if isinstance(getattr(status_doc, "chunks_list", None), list):
+                            chunks_list = [
+                                chunk_id
+                                for chunk_id in status_doc.chunks_list
+                                if isinstance(chunk_id, str) and chunk_id
+                            ]
+                        chunks_count = len(chunks_list)
+
+                        docs_to_reset[doc_id] = {
+                            "status": DocStatus.PENDING,
+                            "content_summary": status_doc.content_summary,
+                            "content_length": status_doc.content_length,
+                            "chunks_count": chunks_count,
+                            "chunks_list": chunks_list,
+                            "created_at": status_doc.created_at,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "file_path": getattr(status_doc, "file_path", None) or "unknown_source",
+                            "track_id": getattr(status_doc, "track_id", ""),
+                            "error_msg": "",
+                            "metadata": {},
+                        }
+                        reset_count += 1
+
+                if reset_count == 0:
+                    return RetrySelectedResponse(
+                        status="no_documents",
+                        message="No failed documents found among the selected IDs",
+                    )
+
+                await rag.doc_status.upsert(docs_to_reset)
+                logger.info(f"Reset {reset_count} selected documents to PENDING for retry")
+
+            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
+
+            return RetrySelectedResponse(
+                status="retry_started",
+                message=f"Retry initiated for {reset_count} selected documents",
+                doc_count=reset_count,
+            )
+
+        except Exception as e:
+            logger.error(f"Error initiating retry for selected documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

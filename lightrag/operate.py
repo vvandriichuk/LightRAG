@@ -504,12 +504,20 @@ async def _summarize_descriptions(
     use_prompt = prompt_template.format(**context_base)
 
     # Use LLM function with cache (higher priority for summary generation)
-    summary, _ = await use_llm_func_with_cache(
-        use_prompt,
-        use_llm_func,
-        llm_response_cache=llm_response_cache,
-        cache_type="summary",
-    )
+    try:
+        summary, _ = await use_llm_func_with_cache(
+            use_prompt,
+            use_llm_func,
+            llm_response_cache=llm_response_cache,
+            cache_type="summary",
+        )
+    except Exception as e:
+        logger.warning(
+            f"LLM summarization failed for {description_type} `{description_name}`, "
+            f"falling back to joined descriptions: {e}"
+        )
+        summary = "\n".join(description_list)
+        # Fall through to the token limit check below
 
     # Check summary token length against embedding limit
     embedding_token_limit = global_config.get("embedding_token_limit")

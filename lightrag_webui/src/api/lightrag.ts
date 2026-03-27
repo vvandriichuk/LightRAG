@@ -177,6 +177,12 @@ export type ReprocessFailedResponse = {
   track_id: string
 }
 
+export type RetrySelectedResponse = {
+  status: 'retry_started' | 'busy' | 'no_documents'
+  message: string
+  doc_count: number
+}
+
 export type DeleteDocResponse = {
   status: 'deletion_started' | 'busy' | 'not_allowed'
   message: string
@@ -500,6 +506,11 @@ export const scanNewDocuments = async (): Promise<ScanResponse> => {
 
 export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
   const response = await axiosInstance.post('/documents/reprocess_failed')
+  return response.data
+}
+
+export const retrySelectedDocuments = async (docIds: string[]): Promise<RetrySelectedResponse> => {
+  const response = await axiosInstance.post('/documents/retry_selected', { doc_ids: docIds })
   return response.data
 }
 

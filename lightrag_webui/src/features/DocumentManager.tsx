@@ -17,6 +17,7 @@ import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
+import RetryDocumentsDialog from '@/components/documents/RetryDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
@@ -1163,10 +1164,16 @@ export default function DocumentManager() {
 
           <div className="flex gap-2">
             {isSelectionMode && (
-              <DeleteDocumentsDialog
-                selectedDocIds={selectedDocIds}
-                onDocumentsDeleted={handleDocumentsDeleted}
-              />
+              <>
+                <RetryDocumentsDialog
+                  selectedDocIds={selectedDocIds}
+                  onDocumentsRetried={handleDocumentsDeleted}
+                />
+                <DeleteDocumentsDialog
+                  selectedDocIds={selectedDocIds}
+                  onDocumentsDeleted={handleDocumentsDeleted}
+                />
+              </>
             )}
             {isSelectionMode && hasCurrentPageSelection ? (
               (() => {

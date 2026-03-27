@@ -78,6 +78,18 @@
       "busy": "Pipeline is busy, please try again later",
       "notAllowed": "No permission to perform this operation"
     },
+    "retryDocuments": {
+      "button": "Retry",
+      "tooltip": "Retry selected documents ({{count}})",
+      "title": "Retry Selected Documents",
+      "description": "This will reprocess {{count}} selected failed document(s)",
+      "confirmButton": "Retry",
+      "retrying": "Retrying...",
+      "success": "Retry initiated for {{count}} document(s)",
+      "error": "Retry failed:\n{{error}}",
+      "busy": "Pipeline is busy, please try again later",
+      "noDocuments": "No failed documents found among the selected"
+    },
     "selectDocuments": {
       "selectCurrentPage": "Select Current Page ({{count}})",
       "deselectAll": "Deselect All ({{count}})"
