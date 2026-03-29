@@ -47,11 +47,15 @@ services:
       - ./lightrag/api/config.py:/app/lightrag/api/config.py
       - ./lightrag/api/routers/document_routes.py:/app/lightrag/api/routers/document_routes.py
       - ./lightrag/api/routers/graph_routes.py:/app/lightrag/api/routers/graph_routes.py
+      - ./lightrag/api/routers/query_routes.py:/app/lightrag/api/routers/query_routes.py
+      - ./lightrag/api/routers/ollama_api.py:/app/lightrag/api/routers/ollama_api.py
       - ./lightrag/lightrag.py:/app/lightrag/lightrag.py
       - ./lightrag/operate.py:/app/lightrag/operate.py
       - ./lightrag/prompt.py:/app/lightrag/prompt.py
       - ./lightrag/constants.py:/app/lightrag/constants.py
       - ./lightrag/utils.py:/app/lightrag/utils.py
+      - ./lightrag/base.py:/app/lightrag/base.py
+      - ./lightrag/kg/networkx_impl.py:/app/lightrag/kg/networkx_impl.py
       - ./lightrag/llm/gemini.py:/app/lightrag/llm/gemini.py
     env_file:
       - .env
