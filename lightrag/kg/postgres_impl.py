@@ -4349,8 +4349,8 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> list[str] | None:
         """Find shortest path using recursive CTE over AGE internal tables.
 
-        Uses UNION ALL split for forward/reverse edges so PostgreSQL can
-        use index scans on start_id and end_id separately (OR kills indexes).
+        Uses a single BFS expansion with a pre-materialized undirected
+        edge list so PostgreSQL can use index scans efficiently.
         """
         if source_id == target_id:
             return [source_id]
@@ -4375,37 +4375,36 @@ class PGGraphStorage(BaseGraphStorage):
             WHERE {eid} = '"{tgt_label}"'
             LIMIT 1
         ),
+        edges AS (
+            SELECT start_id AS n1, end_id AS n2
+            FROM {g}."DIRECTED"
+            UNION ALL
+            SELECT end_id AS n1, start_id AS n2
+            FROM {g}."DIRECTED"
+        ),
         bfs AS (
             SELECT s.id AS node_id, ARRAY[s.id] AS path, 1 AS depth
             FROM src s
 
             UNION ALL
 
-            (
-                SELECT e.end_id, b.path || e.end_id, b.depth + 1
-                FROM bfs b
-                JOIN {g}."DIRECTED" e ON e.start_id = b.node_id
-                WHERE b.depth <= $1
-                    AND NOT e.end_id = ANY(b.path)
-
-                UNION ALL
-
-                SELECT e.start_id, b.path || e.start_id, b.depth + 1
-                FROM bfs b
-                JOIN {g}."DIRECTED" e ON e.end_id = b.node_id
-                WHERE b.depth <= $1
-                    AND NOT e.start_id = ANY(b.path)
-            )
+            SELECT e.n2, b.path || e.n2, b.depth + 1
+            FROM bfs b
+            JOIN edges e ON e.n1 = b.node_id
+            WHERE b.depth <= $1
+                AND NOT e.n2 = ANY(b.path)
         )
         SELECT array_agg({eid} ORDER BY ord) AS path
-        FROM bfs b
-        CROSS JOIN tgt t
-        JOIN LATERAL unnest(b.path)
+        FROM (
+            SELECT path, depth
+            FROM bfs CROSS JOIN tgt t
+            WHERE node_id = t.id
+            ORDER BY depth
+            LIMIT 1
+        ) shortest
+        JOIN LATERAL unnest(shortest.path)
             WITH ORDINALITY AS u(vid, ord) ON true
-        JOIN {g}.base v ON v.id = u.vid
-        WHERE b.node_id = t.id
-        ORDER BY b.depth
-        LIMIT 1;
+        JOIN {g}.base v ON v.id = u.vid;
         """
 
         try:
@@ -4426,7 +4425,7 @@ class PGGraphStorage(BaseGraphStorage):
         """Find shortest paths for multiple pairs in a single SQL query.
 
         Runs one recursive CTE that BFS-expands all source nodes simultaneously,
-        avoiding 10 separate round-trips and keeping buffer cache hot.
+        avoiding N separate round-trips and keeping buffer cache hot.
         """
         if not pairs:
             return {}
@@ -4456,7 +4455,7 @@ class PGGraphStorage(BaseGraphStorage):
         ]
 
         query = f"""
-        WITH
+        WITH RECURSIVE
         pairs AS (
             SELECT
                 ordinality - 1 AS pair_idx,
@@ -4475,6 +4474,13 @@ class PGGraphStorage(BaseGraphStorage):
             FROM pairs p
             JOIN {g}.base b ON {eid} = p.tgt_eid
         ),
+        edges AS (
+            SELECT start_id AS n1, end_id AS n2
+            FROM {g}."DIRECTED"
+            UNION ALL
+            SELECT end_id AS n1, start_id AS n2
+            FROM {g}."DIRECTED"
+        ),
         seeds AS (
             SELECT s.pair_idx, s.src_id AS node_id,
                    ARRAY[s.src_id] AS path, 1 AS depth, t.tgt_id
@@ -4487,23 +4493,12 @@ class PGGraphStorage(BaseGraphStorage):
 
             UNION ALL
 
-            (
-                SELECT b.pair_idx, e.end_id,
-                       b.path || e.end_id, b.depth + 1, b.tgt_id
-                FROM bfs b
-                JOIN {g}."DIRECTED" e ON e.start_id = b.node_id
-                WHERE b.depth <= $3
-                    AND NOT e.end_id = ANY(b.path)
-
-                UNION ALL
-
-                SELECT b.pair_idx, e.start_id,
-                       b.path || e.start_id, b.depth + 1, b.tgt_id
-                FROM bfs b
-                JOIN {g}."DIRECTED" e ON e.end_id = b.node_id
-                WHERE b.depth <= $3
-                    AND NOT e.start_id = ANY(b.path)
-            )
+            SELECT b.pair_idx, e.n2,
+                   b.path || e.n2, b.depth + 1, b.tgt_id
+            FROM bfs b
+            JOIN edges e ON e.n1 = b.node_id
+            WHERE b.depth <= $3
+                AND NOT e.n2 = ANY(b.path)
         ),
         found AS (
             SELECT DISTINCT ON (pair_idx)
@@ -4527,7 +4522,9 @@ class PGGraphStorage(BaseGraphStorage):
                 query, [src_labels, tgt_labels, max_depth], multirows=True
             )
         except Exception:
-            logger.warning("Batch path finding failed, falling back to individual queries")
+            logger.warning(
+                "Batch path finding failed, falling back to individual queries"
+            )
             for src, tgt in real_pairs:
                 result[(src, tgt)] = await self.find_shortest_path(
                     src, tgt, max_depth
