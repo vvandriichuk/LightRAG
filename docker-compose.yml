@@ -56,6 +56,7 @@ services:
       - ./lightrag/utils.py:/app/lightrag/utils.py
       - ./lightrag/base.py:/app/lightrag/base.py
       - ./lightrag/kg/networkx_impl.py:/app/lightrag/kg/networkx_impl.py
+      - ./lightrag/kg/postgres_impl.py:/app/lightrag/kg/postgres_impl.py
       - ./lightrag/llm/gemini.py:/app/lightrag/llm/gemini.py
     env_file:
       - .env

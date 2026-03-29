@@ -4344,6 +4344,57 @@ class PGGraphStorage(BaseGraphStorage):
 
         return edges
 
+    async def find_shortest_path(
+        self, source_id: str, target_id: str, max_depth: int = 4
+    ) -> list[str] | None:
+        """Find shortest path between two nodes using AGE Cypher variable-length path.
+
+        Uses a single Cypher query instead of iterative BFS, which is
+        dramatically faster on large graphs (O(1) round-trips vs O(depth * fan-out)).
+        """
+        if source_id == target_id:
+            return [source_id]
+
+        src_label = self._normalize_node_id(source_id)
+        tgt_label = self._normalize_node_id(target_id)
+
+        cypher_query = (
+            f'MATCH p = shortestPath('
+            f'(a:base {{entity_id: "{src_label}"}})'
+            f'-[*1..{max_depth}]-'
+            f'(b:base {{entity_id: "{tgt_label}"}}))'
+            f' RETURN [n IN nodes(p) | n.entity_id] AS path'
+        )
+
+        query = (
+            f"SELECT * FROM cypher("
+            f"{_dollar_quote(self.graph_name)}, "
+            f"{_dollar_quote(cypher_query)}"
+            f") AS (path agtype)"
+        )
+
+        try:
+            results = await self._query(query)
+        except PGGraphQueryException:
+            return None
+
+        if not results:
+            return None
+
+        path_data = results[0].get("path")
+        if not path_data:
+            return None
+
+        # AGE returns agtype — may be a list or JSON string
+        if isinstance(path_data, str):
+            import json as _json
+            path_data = _json.loads(path_data)
+
+        if isinstance(path_data, list):
+            return [str(node) for node in path_data]
+
+        return None
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),

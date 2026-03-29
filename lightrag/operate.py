@@ -5253,11 +5253,18 @@ async def _find_transitive_paths(
 
     pairs = list(itertools.combinations(entity_names, 2))[:max_pairs]
 
+    import time as _time
+
+    _t0 = _time.monotonic()
     path_tasks = [
         knowledge_graph_inst.find_shortest_path(src, tgt, max_depth=max_depth)
         for src, tgt in pairs
     ]
     path_results = await asyncio.gather(*path_tasks, return_exceptions=True)
+    _elapsed = _time.monotonic() - _t0
+    logger.info(
+        f"Path finding: {len(pairs)} pairs, depth={max_depth}, took {_elapsed:.2f}s"
+    )
 
     # Collect all paths that were found and have intermediate nodes
     found_paths: list[list[str]] = []
