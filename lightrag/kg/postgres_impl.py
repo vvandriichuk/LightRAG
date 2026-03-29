@@ -4344,127 +4344,178 @@ class PGGraphStorage(BaseGraphStorage):
 
         return edges
 
-    async def _resolve_entity_id(self, entity_name: str) -> str | None:
-        """Resolve entity name to AGE internal graph ID."""
-        label = self._normalize_node_id(entity_name)
+    # --- Path finding helpers (batch-optimized) ---
+
+    _EID_EXPR = (
+        "ag_catalog.agtype_access_operator"
+        "(properties, '\"entity_id\"'::agtype)::text"
+    )
+    _MAX_VISITED_PER_PAIR = 50_000
+
+    async def _resolve_entity_ids_batch(
+        self, names: list[str],
+    ) -> dict[str, str | None]:
+        """Resolve multiple entity names to AGE graph IDs in one query."""
+        if not names:
+            return {}
         g = self.graph_name
-        eid_expr = (
-            "ag_catalog.agtype_access_operator"
-            "(properties, '\"entity_id\"'::agtype)::text"
-        )
+        labels = [self._normalize_node_id(n) for n in names]
         query = (
-            f"SELECT id FROM {g}.base"
-            f" WHERE {eid_expr} = $1 LIMIT 1"
+            f"SELECT {self._EID_EXPR} AS name, id"
+            f" FROM {g}.base"
+            f" WHERE {self._EID_EXPR} = ANY($1::text[])"
         )
         try:
             data = await self.db.query(
-                query, [label], multirows=False,
+                query, [labels], multirows=True,
                 with_age=True, graph_name=g,
             )
-            return data["id"] if data else None
-        except Exception:
-            return None
+        except Exception as e:
+            logger.warning(f"Batch entity ID resolve failed: {e}")
+            return {n: None for n in names}
+        gid_map: dict[str, str] = {}
+        for row in data or []:
+            gid_map[row["name"]] = row["id"]
+        return {
+            name: gid_map.get(self._normalize_node_id(name))
+            for name in names
+        }
 
-    async def _resolve_graph_ids_to_names(
+    async def _resolve_graph_ids_to_names_batch(
         self, graph_ids: list,
-    ) -> list[str]:
-        """Convert AGE internal graph IDs back to entity names."""
+    ) -> dict[str, str]:
+        """Convert multiple AGE graph IDs to entity names in one query."""
+        if not graph_ids:
+            return {}
         g = self.graph_name
-        eid_expr = (
-            "ag_catalog.agtype_access_operator"
-            "(properties, '\"entity_id\"'::agtype)::text"
+        query = (
+            f"SELECT id, {self._EID_EXPR} AS name"
+            f" FROM {g}.base"
+            f" WHERE id = ANY($1::graphid[])"
         )
-        names = []
-        for gid in graph_ids:
-            query = (
-                f"SELECT {eid_expr} AS name"
-                f" FROM {g}.base WHERE id = $1::graphid"
+        try:
+            data = await self.db.query(
+                query, [graph_ids], multirows=True,
+                with_age=True, graph_name=g,
             )
-            try:
-                data = await self.db.query(
-                    query, [gid], multirows=False,
-                    with_age=True, graph_name=g,
-                )
-                names.append(data["name"] if data else "?")
-            except Exception:
-                names.append("?")
-        return names
+        except Exception as e:
+            logger.warning(f"Batch graph ID resolve failed: {e}")
+            return {}
+        return {row["id"]: row["name"] for row in data or []}
 
     async def _fetch_neighbors_batch(
         self, frontier_ids: list,
     ) -> dict:
-        """Fetch all neighbors for a batch of node IDs in one query."""
+        """Fetch all neighbors for a batch of node IDs.
+
+        Uses UNION ALL to enable separate index scans on start_id and end_id.
+        """
+        if not frontier_ids:
+            return {}
         g = self.graph_name
         query = (
             f"SELECT start_id, end_id FROM {g}.\"DIRECTED\""
             f" WHERE start_id = ANY($1::graphid[])"
-            f" OR end_id = ANY($1::graphid[])"
+            f" UNION ALL"
+            f" SELECT start_id, end_id FROM {g}.\"DIRECTED\""
+            f" WHERE end_id = ANY($1::graphid[])"
         )
         try:
             data = await self.db.query(
                 query, [frontier_ids], multirows=True,
                 with_age=True, graph_name=g,
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Batch neighbor fetch failed: {e}")
             return {}
+        frontier_set = set(frontier_ids)
         adj: dict = {}
         for row in data or []:
             s, e = row["start_id"], row["end_id"]
-            adj.setdefault(s, []).append(e)
-            adj.setdefault(e, []).append(s)
+            if s in frontier_set:
+                adj.setdefault(s, []).append(e)
+            if e in frontier_set:
+                adj.setdefault(e, []).append(s)
         return adj
+
+    def _reconstruct_path(
+        self, parent: dict, src_gid: str, tgt_gid: str,
+    ) -> list:
+        """Reconstruct path from parent-pointer map."""
+        path = [tgt_gid]
+        node = tgt_gid
+        while node != src_gid:
+            node = parent[node]
+            path.append(node)
+        path.reverse()
+        return path
 
     async def find_shortest_path(
         self, source_id: str, target_id: str, max_depth: int = 4
     ) -> list[str] | None:
-        """Find shortest path via Python-level BFS with batch edge fetching.
+        """Find shortest path via Python BFS with batch edge fetching.
 
-        Each BFS level fetches all neighbor edges in a single SQL query.
-        This avoids recursive CTE temp-space explosion on dense graphs.
+        Uses parent pointers instead of full path copies to save memory.
+        Caps visited set at _MAX_VISITED_PER_PAIR to prevent explosion.
         """
         if source_id == target_id:
             return [source_id]
 
-        src_gid = await self._resolve_entity_id(source_id)
-        tgt_gid = await self._resolve_entity_id(target_id)
+        gid_map = await self._resolve_entity_ids_batch(
+            [source_id, target_id]
+        )
+        src_gid = gid_map.get(source_id)
+        tgt_gid = gid_map.get(target_id)
         if not src_gid or not tgt_gid:
             return None
 
         from collections import deque
 
         visited = {src_gid}
-        queue: deque[tuple[str, list]] = deque([(src_gid, [src_gid])])
-        found_path = None
+        parent: dict = {}
+        queue: deque = deque([src_gid])
+        depth_map = {src_gid: 0}
+        found = False
 
-        while queue and not found_path:
-            frontier = []
+        while queue and not found:
+            # Drain queue into frontier for current level
+            frontier_ids = []
             while queue:
-                node_id, path = queue.popleft()
-                if len(path) - 1 >= max_depth:
+                nid = queue.popleft()
+                if depth_map[nid] >= max_depth:
                     continue
-                frontier.append((node_id, path))
+                frontier_ids.append(nid)
 
-            if not frontier:
+            if not frontier_ids:
                 break
 
-            frontier_ids = [n for n, _ in frontier]
             adj = await self._fetch_neighbors_batch(frontier_ids)
 
-            for node_id, path in frontier:
-                for neighbor in adj.get(node_id, []):
+            for nid in frontier_ids:
+                cur_depth = depth_map[nid]
+                for neighbor in adj.get(nid, []):
                     if neighbor == tgt_gid:
-                        found_path = path + [neighbor]
+                        parent[neighbor] = nid
+                        found = True
                         break
                     if neighbor not in visited:
+                        if len(visited) >= self._MAX_VISITED_PER_PAIR:
+                            continue
                         visited.add(neighbor)
-                        queue.append((neighbor, path + [neighbor]))
-                if found_path:
+                        parent[neighbor] = nid
+                        depth_map[neighbor] = cur_depth + 1
+                        queue.append(neighbor)
+                if found:
                     break
 
-        if not found_path:
+        if not found:
             return None
 
-        return await self._resolve_graph_ids_to_names(found_path)
+        path_gids = self._reconstruct_path(parent, src_gid, tgt_gid)
+        id_to_name = await self._resolve_graph_ids_to_names_batch(
+            path_gids
+        )
+        return [id_to_name.get(gid, "?") for gid in path_gids]
 
     async def find_shortest_paths_batch(
         self,
@@ -4473,8 +4524,8 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> dict[tuple[str, str], list[str] | None]:
         """Find shortest paths for multiple pairs using shared BFS.
 
-        All pairs share the same neighbor-fetch query per BFS level,
-        reducing round-trips from N*depth to just depth.
+        All pairs share the same neighbor-fetch query per BFS level.
+        Uses parent pointers and max_visited cap per pair.
         """
         if not pairs:
             return {}
@@ -4490,19 +4541,13 @@ class PGGraphStorage(BaseGraphStorage):
         if not real_pairs:
             return result
 
-        # Resolve all unique entity names to graph IDs
-        all_names = set()
-        for s, t in real_pairs:
-            all_names.add(s)
-            all_names.add(t)
-
-        name_to_gid: dict[str, str | None] = {}
-        for name in all_names:
-            name_to_gid[name] = await self._resolve_entity_id(name)
+        # Batch-resolve all entity names → graph IDs (1 query)
+        all_names = list({n for p in real_pairs for n in p})
+        name_to_gid = await self._resolve_entity_ids_batch(all_names)
 
         from collections import deque
 
-        # Per-pair BFS state: {pair_idx: {tgt, visited, queue}}
+        # Per-pair BFS state using parent pointers
         found_raw: dict[int, list | None] = {}
         active: dict[int, dict] = {}
 
@@ -4514,63 +4559,79 @@ class PGGraphStorage(BaseGraphStorage):
                 continue
             found_raw[idx] = None
             active[idx] = {
+                "src_gid": src_gid,
                 "tgt_gid": tgt_gid,
                 "visited": {src_gid},
-                "queue": deque([(src_gid, [src_gid])]),
+                "parent": {},
+                "depth_map": {src_gid: 0},
+                "queue": deque([src_gid]),
             }
 
         for _depth in range(max_depth):
             if not active:
                 break
 
-            # Collect frontier nodes across ALL active pairs
+            # Collect frontier across ALL active pairs
             all_frontier_ids: set = set()
-            pair_frontiers: dict[int, list[tuple]] = {}
-            for idx, state in active.items():
+            pair_frontiers: dict[int, list] = {}
+            for idx, st in active.items():
                 frontier = []
-                while state["queue"]:
-                    node_id, path = state["queue"].popleft()
-                    if len(path) - 1 >= max_depth:
+                while st["queue"]:
+                    nid = st["queue"].popleft()
+                    if st["depth_map"][nid] >= max_depth:
                         continue
-                    frontier.append((node_id, path))
-                    all_frontier_ids.add(node_id)
+                    frontier.append(nid)
+                    all_frontier_ids.add(nid)
                 pair_frontiers[idx] = frontier
 
             if not all_frontier_ids:
                 break
 
-            # Single batch SQL for all pairs at this depth
             adj = await self._fetch_neighbors_batch(
                 list(all_frontier_ids)
             )
 
             done = []
             for idx, frontier in pair_frontiers.items():
-                state = active[idx]
-                for node_id, path in frontier:
-                    for neighbor in adj.get(node_id, []):
-                        if neighbor == state["tgt_gid"]:
-                            found_raw[idx] = path + [neighbor]
+                st = active[idx]
+                for nid in frontier:
+                    cur_depth = st["depth_map"][nid]
+                    for neighbor in adj.get(nid, []):
+                        if neighbor == st["tgt_gid"]:
+                            st["parent"][neighbor] = nid
+                            found_raw[idx] = self._reconstruct_path(
+                                st["parent"], st["src_gid"], st["tgt_gid"]
+                            )
                             done.append(idx)
                             break
-                        if neighbor not in state["visited"]:
-                            state["visited"].add(neighbor)
-                            state["queue"].append(
-                                (neighbor, path + [neighbor])
-                            )
+                        if neighbor not in st["visited"]:
+                            if len(st["visited"]) >= self._MAX_VISITED_PER_PAIR:
+                                continue
+                            st["visited"].add(neighbor)
+                            st["parent"][neighbor] = nid
+                            st["depth_map"][neighbor] = cur_depth + 1
+                            st["queue"].append(neighbor)
                     if idx in done:
                         break
 
             for idx in done:
                 del active[idx]
 
-        # Resolve graph IDs to entity names
+        # Batch-resolve all graph IDs from found paths (1 query)
+        all_gids = []
+        for raw in found_raw.values():
+            if raw:
+                all_gids.extend(raw)
+        id_to_name = await self._resolve_graph_ids_to_names_batch(
+            list(set(all_gids))
+        ) if all_gids else {}
+
         for idx, (src, tgt) in enumerate(real_pairs):
             raw = found_raw.get(idx)
             if raw:
-                result[(src, tgt)] = (
-                    await self._resolve_graph_ids_to_names(raw)
-                )
+                result[(src, tgt)] = [
+                    id_to_name.get(gid, "?") for gid in raw
+                ]
             else:
                 result[(src, tgt)] = None
 
