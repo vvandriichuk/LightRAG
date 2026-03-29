@@ -169,7 +169,7 @@ class QueryParam:
     containing citation information for the retrieved content.
     """
 
-    enable_path_finding: bool = False
+    enable_path_finding: bool = os.getenv("ENABLE_PATH_FINDING", "false").lower() == "true"
     """Enable transitive path finding between entities found in vector search.
     When multiple entities are found, the system attempts to find shortest paths
     between them in the knowledge graph, adding intermediate entities and relations to context."""
