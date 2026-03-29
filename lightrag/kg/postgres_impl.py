@@ -4347,53 +4347,75 @@ class PGGraphStorage(BaseGraphStorage):
     async def find_shortest_path(
         self, source_id: str, target_id: str, max_depth: int = 4
     ) -> list[str] | None:
-        """Find shortest path between two nodes using AGE Cypher variable-length path.
+        """Find shortest path using recursive CTE over AGE internal tables.
 
-        Uses a single Cypher query instead of iterative BFS, which is
-        dramatically faster on large graphs (O(1) round-trips vs O(depth * fan-out)).
+        AGE does not support Neo4j's shortestPath() function, so we use
+        a BFS via recursive CTE on the underlying vertex/edge tables.
+        This runs as a single SQL query — much faster than Python-level BFS.
         """
         if source_id == target_id:
             return [source_id]
 
         src_label = self._normalize_node_id(source_id)
         tgt_label = self._normalize_node_id(target_id)
+        g = self.graph_name
 
-        cypher_query = (
-            f'MATCH p = shortestPath('
-            f'(a:base {{entity_id: "{src_label}"}})'
-            f'-[*1..{max_depth}]-'
-            f'(b:base {{entity_id: "{tgt_label}"}}))'
-            f' RETURN [n IN nodes(p) | n.entity_id] AS path'
+        query = f"""
+        WITH RECURSIVE
+        src AS (
+            SELECT id FROM {g}.base
+            WHERE ag_catalog.agtype_access_operator(properties, '"entity_id"'::agtype)::text = '"{src_label}"'
+            LIMIT 1
+        ),
+        tgt AS (
+            SELECT id FROM {g}.base
+            WHERE ag_catalog.agtype_access_operator(properties, '"entity_id"'::agtype)::text = '"{tgt_label}"'
+            LIMIT 1
+        ),
+        bfs AS (
+            SELECT
+                s.id AS node_id,
+                ARRAY[s.id] AS path,
+                1 AS depth
+            FROM src s
+            UNION ALL
+            SELECT
+                CASE WHEN e.start_id = b.node_id THEN e.end_id ELSE e.start_id END,
+                b.path || CASE WHEN e.start_id = b.node_id THEN e.end_id ELSE e.start_id END,
+                b.depth + 1
+            FROM bfs b
+            JOIN {g}."DIRECTED" e
+                ON e.start_id = b.node_id OR e.end_id = b.node_id
+            WHERE b.depth <= $1
+                AND NOT (CASE WHEN e.start_id = b.node_id THEN e.end_id ELSE e.start_id END) = ANY(b.path)
         )
-
-        query = (
-            f"SELECT * FROM cypher("
-            f"{_dollar_quote(self.graph_name)}, "
-            f"{_dollar_quote(cypher_query)}"
-            f") AS (path agtype)"
-        )
+        SELECT array_agg(
+            ag_catalog.agtype_access_operator(v.properties, '"entity_id"'::agtype)::text
+            ORDER BY ord
+        ) AS path
+        FROM bfs b
+        CROSS JOIN tgt t
+        JOIN LATERAL unnest(b.path) WITH ORDINALITY AS u(vid, ord) ON true
+        JOIN {g}.base v ON v.id = u.vid
+        WHERE b.node_id = t.id
+        ORDER BY b.depth
+        LIMIT 1;
+        """
 
         try:
-            results = await self._query(query)
-        except PGGraphQueryException:
+            data = await self.db.query(
+                query, [max_depth], multirows=True
+            )
+        except Exception:
             return None
 
-        if not results:
+        if not data or not data[0] or not data[0].get("path"):
             return None
 
-        path_data = results[0].get("path")
-        if not path_data:
-            return None
-
-        # AGE returns agtype — may be a list or JSON string
-        if isinstance(path_data, str):
-            import json as _json
-            path_data = _json.loads(path_data)
-
-        if isinstance(path_data, list):
-            return [str(node) for node in path_data]
-
-        return None
+        # Strip surrounding quotes from entity_id values
+        return [
+            p.strip('"') for p in data[0]["path"]
+        ]
 
     @retry(
         stop=stop_after_attempt(3),
