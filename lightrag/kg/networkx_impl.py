@@ -130,6 +130,21 @@ class NetworkXStorage(BaseGraphStorage):
             return list(graph.edges(source_node_id))
         return None
 
+    async def find_shortest_path(
+        self, source_id: str, target_id: str, max_depth: int = 4
+    ) -> list[str] | None:
+        """Find shortest path using native NetworkX shortest_path."""
+        graph = await self._get_graph()
+        if not graph.has_node(source_id) or not graph.has_node(target_id):
+            return None
+        try:
+            path = nx.shortest_path(graph, source_id, target_id)
+            if len(path) - 1 > max_depth:
+                return None
+            return path
+        except nx.NetworkXNoPath:
+            return None
+
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Importance notes:

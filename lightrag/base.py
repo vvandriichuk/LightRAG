@@ -168,6 +168,14 @@ class QueryParam:
     containing citation information for the retrieved content.
     """
 
+    enable_path_finding: bool = False
+    """Enable transitive path finding between entities found in vector search.
+    When multiple entities are found, the system attempts to find shortest paths
+    between them in the knowledge graph, adding intermediate entities and relations to context."""
+
+    path_finding_max_depth: int = int(os.getenv("PATH_FINDING_MAX_DEPTH", "4"))
+    """Max hops for BFS path finding between entities. Default 4."""
+
 
 @dataclass
 class StorageNameSpace(ABC):
@@ -564,6 +572,43 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             edges = await self.get_node_edges(node_id)
             result[node_id] = edges if edges is not None else []
         return result
+
+    async def find_shortest_path(
+        self, source_id: str, target_id: str, max_depth: int = 4
+    ) -> list[str] | None:
+        """Find shortest path between two nodes using BFS.
+
+        Returns a list of node IDs forming the path (including source and target),
+        or None if no path exists within max_depth.
+
+        Default implementation uses get_node_edges for BFS traversal.
+        Override in backends with native shortest-path support for better performance.
+        """
+        if source_id == target_id:
+            return [source_id]
+
+        from collections import deque
+
+        visited = {source_id}
+        queue: deque[tuple[str, list[str]]] = deque(
+            [(source_id, [source_id])]
+        )
+
+        while queue:
+            current, path = queue.popleft()
+            if len(path) - 1 >= max_depth:
+                continue
+            edges = await self.get_node_edges(current)
+            if not edges:
+                continue
+            for edge in edges:
+                neighbor = edge[1] if edge[0] == current else edge[0]
+                if neighbor == target_id:
+                    return path + [neighbor]
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, path + [neighbor]))
+        return None
 
     @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:

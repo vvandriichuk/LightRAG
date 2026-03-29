@@ -2749,6 +2749,8 @@ class LightRAG:
             model_func=param.model_func,
             user_prompt=param.user_prompt,
             enable_rerank=param.enable_rerank,
+            enable_path_finding=param.enable_path_finding,
+            path_finding_max_depth=param.path_finding_max_depth,
         )
 
         query_result = None

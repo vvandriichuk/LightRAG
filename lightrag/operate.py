@@ -4,6 +4,7 @@ from pathlib import Path
 
 import asyncio
 import difflib
+import itertools
 import json
 import json_repair
 import re
@@ -3933,6 +3934,8 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_param.enable_path_finding,
+        query_param.path_finding_max_depth,
     )
 
     cached_result = await handle_cache(
@@ -3967,6 +3970,8 @@ async def kg_query(
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "enable_path_finding": query_param.enable_path_finding,
+                "path_finding_max_depth": query_param.path_finding_max_depth,
             }
             await save_to_cache(
                 hashing_kv,
@@ -4130,6 +4135,8 @@ async def extract_keywords_only(
                 "max_total_tokens": param.max_total_tokens,
                 "user_prompt": param.user_prompt or "",
                 "enable_rerank": param.enable_rerank,
+                "enable_path_finding": param.enable_path_finding,
+                "path_finding_max_depth": param.path_finding_max_depth,
             }
             await save_to_cache(
                 hashing_kv,
@@ -4400,6 +4407,34 @@ async def _perform_kg_search(
                 final_relations.append(relation)
                 seen_relations.add(rel_key)
 
+    # Transitive path finding (optional)
+    paths_found: list[list[str]] = []
+    if query_param.enable_path_finding and len(final_entities) >= 2:
+        path_entities, path_relations, paths_found = await _find_transitive_paths(
+            final_entities,
+            knowledge_graph_inst,
+            query_param,
+        )
+
+        # Append path entities with low priority (after primary results)
+        for entity in path_entities:
+            entity_name = entity.get("entity_name")
+            if entity_name and entity_name not in seen_entities:
+                final_entities.append(entity)
+                seen_entities.add(entity_name)
+
+        # Append path relations with low priority
+        for relation in path_relations:
+            if "src_tgt" in relation:
+                rel_key = tuple(sorted(relation["src_tgt"]))
+            else:
+                rel_key = tuple(
+                    sorted([relation.get("src_id"), relation.get("tgt_id")])
+                )
+            if rel_key not in seen_relations:
+                final_relations.append(relation)
+                seen_relations.add(rel_key)
+
     logger.info(
         f"Raw search results: {len(final_entities)} entities, {len(final_relations)} relations, {len(vector_chunks)} vector chunks"
     )
@@ -4410,6 +4445,7 @@ async def _perform_kg_search(
         "vector_chunks": vector_chunks,
         "chunk_tracking": chunk_tracking,
         "query_embedding": query_embedding,
+        "paths_found": paths_found,
     }
 
 
@@ -4696,6 +4732,7 @@ async def _build_context_str(
     chunk_tracking: dict = None,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
+    paths_found: list[list[str]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
@@ -4743,12 +4780,25 @@ async def _build_context_str(
         json.dumps(relation, ensure_ascii=False) for relation in relations_context
     )
 
+    # Build paths section if transitive paths were found
+    paths_section = ""
+    if paths_found:
+        path_lines = []
+        for path in paths_found:
+            path_lines.append("- " + " → ".join(path))
+        paths_section = (
+            "\nTransitive Paths Found (connections between entities through intermediate nodes):\n"
+            + "\n".join(path_lines)
+            + "\n"
+        )
+
     # Calculate preliminary kg context tokens
     pre_kg_context = kg_context_template.format(
         entities_str=entities_str,
         relations_str=relations_str,
         text_chunks_str="",
         reference_list_str="",
+        paths_section=paths_section,
     )
     kg_context_tokens = len(tokenizer.encode(pre_kg_context))
 
@@ -4847,6 +4897,7 @@ async def _build_context_str(
         relations_str=relations_str,
         text_chunks_str=text_units_str,
         reference_list_str=reference_list_str,
+        paths_section=paths_section,
     )
 
     # Always return both context and complete data structure (unified approach)
@@ -4951,6 +5002,7 @@ async def _build_query_context(
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
+        paths_found=search_result.get("paths_found"),
     )
 
     # Convert keywords strings to lists and add complete metadata to raw_data
@@ -5103,6 +5155,116 @@ async def _find_most_related_edges_from_entities(
     )
 
     return all_edges_data
+
+
+async def _find_transitive_paths(
+    node_datas: list[dict],
+    knowledge_graph_inst: BaseGraphStorage,
+    query_param: QueryParam,
+) -> tuple[list[dict], list[dict], list[list[str]]]:
+    """Find transitive paths between entities discovered by vector search.
+
+    For each pair of found entities, attempts BFS shortest-path in the knowledge graph.
+    Returns intermediate entities, connecting relations, and path descriptions.
+    """
+    entity_names = [dp["entity_name"] for dp in node_datas]
+    if len(entity_names) < 2:
+        return [], [], []
+
+    max_depth = query_param.path_finding_max_depth
+    # Cap pairs to avoid combinatorial explosion: C(n,2) grows quadratically
+    max_pairs = 10
+
+    pairs = list(itertools.combinations(entity_names, 2))[:max_pairs]
+
+    path_tasks = [
+        knowledge_graph_inst.find_shortest_path(src, tgt, max_depth=max_depth)
+        for src, tgt in pairs
+    ]
+    path_results = await asyncio.gather(*path_tasks, return_exceptions=True)
+
+    # Collect all paths that were found and have intermediate nodes
+    found_paths: list[list[str]] = []
+    intermediate_node_ids: set[str] = set()
+    edge_pairs_to_fetch: list[tuple[str, str]] = []
+    existing_entity_names = set(entity_names)
+
+    for result in path_results:
+        if isinstance(result, BaseException):
+            logger.warning(f"Path finding failed for one pair: {result}")
+            continue
+        # Only keep paths with intermediate nodes (len > 2).
+        # Direct edges (len == 2) are already captured by normal entity/relation retrieval.
+        if result and len(result) > 2:
+            found_paths.append(result)
+            for node_id in result[1:-1]:
+                if node_id not in existing_entity_names:
+                    intermediate_node_ids.add(node_id)
+            for i in range(len(result) - 1):
+                edge_pairs_to_fetch.append((result[i], result[i + 1]))
+
+    if not found_paths:
+        return [], [], found_paths
+
+    # Batch-fetch intermediate node data and edge data
+    nodes_dict = {}
+    if intermediate_node_ids:
+        nodes_dict = await knowledge_graph_inst.get_nodes_batch(
+            list(intermediate_node_ids)
+        )
+
+    # Fetch edges in both directions to handle undirected graphs stored with arbitrary direction
+    edge_pairs_dicts = []
+    for src, tgt in edge_pairs_to_fetch:
+        edge_pairs_dicts.append({"src": src, "tgt": tgt})
+        edge_pairs_dicts.append({"src": tgt, "tgt": src})
+    edges_dict = await knowledge_graph_inst.get_edges_batch(edge_pairs_dicts)
+
+    # Build path entities (intermediate nodes only, endpoints already in results)
+    path_entities = []
+    seen_path_entities: set[str] = set()
+    for node_id in intermediate_node_ids:
+        node_data = nodes_dict.get(node_id)
+        if node_data and node_id not in seen_path_entities:
+            seen_path_entities.add(node_id)
+            path_entities.append(
+                {
+                    **node_data,
+                    "entity_name": node_id,
+                    "rank": 0,
+                }
+            )
+
+    # Build path relations
+    path_relations = []
+    seen_path_relations: set[tuple[str, str]] = set()
+    for pair in edge_pairs_to_fetch:
+        edge_props = edges_dict.get(pair)
+        if edge_props is None:
+            edge_props = edges_dict.get((pair[1], pair[0]))
+
+        if edge_props is not None:
+            rel_key = tuple(sorted(pair))
+            if rel_key not in seen_path_relations:
+                seen_path_relations.add(rel_key)
+                edge_props_copy = dict(edge_props)
+                if "weight" not in edge_props_copy:
+                    edge_props_copy["weight"] = 1.0
+                path_relations.append(
+                    {
+                        "src_tgt": pair,
+                        "rank": 0,
+                        **edge_props_copy,
+                    }
+                )
+
+    logger.info(
+        f"Path finding: {len(found_paths)} paths found, "
+        f"{len(path_entities)} intermediate entities, "
+        f"{len(path_relations)} path relations"
+    )
+
+    return path_entities, path_relations, found_paths
 
 
 async def _find_related_text_unit_from_entities(
@@ -5764,6 +5926,8 @@ async def naive_query(
         query_param.max_total_tokens,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_param.enable_path_finding,
+        query_param.path_finding_max_depth,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
@@ -5794,6 +5958,8 @@ async def naive_query(
                 "max_total_tokens": query_param.max_total_tokens,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "enable_path_finding": query_param.enable_path_finding,
+                "path_finding_max_depth": query_param.path_finding_max_depth,
             }
             await save_to_cache(
                 hashing_kv,

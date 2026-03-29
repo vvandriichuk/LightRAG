@@ -110,6 +110,19 @@ class QueryRequest(BaseModel):
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
     )
 
+    enable_path_finding: Optional[bool] = Field(
+        default=None,
+        description="Enable transitive path finding between entities found in vector search. "
+        "When multiple entities are found, the system attempts to find shortest paths between them.",
+    )
+
+    path_finding_max_depth: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=10,
+        description="Max hops for BFS path finding between entities. Default 4.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:

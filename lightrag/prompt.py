@@ -321,7 +321,7 @@ Knowledge Graph Data (Relationship):
 ```json
 {relations_str}
 ```
-
+{paths_section}
 Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
 
 ```json
