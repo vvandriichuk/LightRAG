@@ -616,6 +616,23 @@ class BaseGraphStorage(StorageNameSpace, ABC):
                     queue.append((neighbor, path + [neighbor]))
         return None
 
+    async def find_shortest_paths_batch(
+        self,
+        pairs: list[tuple[str, str]],
+        max_depth: int = 4,
+    ) -> dict[tuple[str, str], list[str] | None]:
+        """Find shortest paths for multiple pairs. Override for batch-optimized backends."""
+        import asyncio
+
+        tasks = [
+            self.find_shortest_path(src, tgt, max_depth) for src, tgt in pairs
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return {
+            pair: r if not isinstance(r, BaseException) else None
+            for pair, r in zip(pairs, results)
+        }
+
     @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert a new node or update an existing node in the graph.

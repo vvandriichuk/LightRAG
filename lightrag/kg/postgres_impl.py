@@ -4349,9 +4349,8 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> list[str] | None:
         """Find shortest path using recursive CTE over AGE internal tables.
 
-        AGE does not support Neo4j's shortestPath() function, so we use
-        a BFS via recursive CTE on the underlying vertex/edge tables.
-        This runs as a single SQL query — much faster than Python-level BFS.
+        Uses UNION ALL split for forward/reverse edges so PostgreSQL can
+        use index scans on start_id and end_id separately (OR kills indexes).
         """
         if source_id == target_id:
             return [source_id]
@@ -4359,43 +4358,50 @@ class PGGraphStorage(BaseGraphStorage):
         src_label = self._normalize_node_id(source_id)
         tgt_label = self._normalize_node_id(target_id)
         g = self.graph_name
+        eid = (
+            """ag_catalog.agtype_access_operator"""
+            """(properties, '"entity_id"'::agtype)::text"""
+        )
 
         query = f"""
         WITH RECURSIVE
         src AS (
             SELECT id FROM {g}.base
-            WHERE ag_catalog.agtype_access_operator(properties, '"entity_id"'::agtype)::text = '"{src_label}"'
+            WHERE {eid} = '"{src_label}"'
             LIMIT 1
         ),
         tgt AS (
             SELECT id FROM {g}.base
-            WHERE ag_catalog.agtype_access_operator(properties, '"entity_id"'::agtype)::text = '"{tgt_label}"'
+            WHERE {eid} = '"{tgt_label}"'
             LIMIT 1
         ),
         bfs AS (
-            SELECT
-                s.id AS node_id,
-                ARRAY[s.id] AS path,
-                1 AS depth
+            SELECT s.id AS node_id, ARRAY[s.id] AS path, 1 AS depth
             FROM src s
+
             UNION ALL
-            SELECT
-                CASE WHEN e.start_id = b.node_id THEN e.end_id ELSE e.start_id END,
-                b.path || CASE WHEN e.start_id = b.node_id THEN e.end_id ELSE e.start_id END,
-                b.depth + 1
-            FROM bfs b
-            JOIN {g}."DIRECTED" e
-                ON e.start_id = b.node_id OR e.end_id = b.node_id
-            WHERE b.depth <= $1
-                AND NOT (CASE WHEN e.start_id = b.node_id THEN e.end_id ELSE e.start_id END) = ANY(b.path)
+
+            (
+                SELECT e.end_id, b.path || e.end_id, b.depth + 1
+                FROM bfs b
+                JOIN {g}."DIRECTED" e ON e.start_id = b.node_id
+                WHERE b.depth <= $1
+                    AND NOT e.end_id = ANY(b.path)
+
+                UNION ALL
+
+                SELECT e.start_id, b.path || e.start_id, b.depth + 1
+                FROM bfs b
+                JOIN {g}."DIRECTED" e ON e.end_id = b.node_id
+                WHERE b.depth <= $1
+                    AND NOT e.start_id = ANY(b.path)
+            )
         )
-        SELECT array_agg(
-            ag_catalog.agtype_access_operator(v.properties, '"entity_id"'::agtype)::text
-            ORDER BY ord
-        ) AS path
+        SELECT array_agg({eid} ORDER BY ord) AS path
         FROM bfs b
         CROSS JOIN tgt t
-        JOIN LATERAL unnest(b.path) WITH ORDINALITY AS u(vid, ord) ON true
+        JOIN LATERAL unnest(b.path)
+            WITH ORDINALITY AS u(vid, ord) ON true
         JOIN {g}.base v ON v.id = u.vid
         WHERE b.node_id = t.id
         ORDER BY b.depth
@@ -4403,19 +4409,141 @@ class PGGraphStorage(BaseGraphStorage):
         """
 
         try:
-            data = await self.db.query(
-                query, [max_depth], multirows=True
-            )
+            data = await self.db.query(query, [max_depth], multirows=True)
         except Exception:
             return None
 
         if not data or not data[0] or not data[0].get("path"):
             return None
 
-        # Strip surrounding quotes from entity_id values
-        return [
-            p.strip('"') for p in data[0]["path"]
+        return [p.strip('"') for p in data[0]["path"]]
+
+    async def find_shortest_paths_batch(
+        self,
+        pairs: list[tuple[str, str]],
+        max_depth: int = 4,
+    ) -> dict[tuple[str, str], list[str] | None]:
+        """Find shortest paths for multiple pairs in a single SQL query.
+
+        Runs one recursive CTE that BFS-expands all source nodes simultaneously,
+        avoiding 10 separate round-trips and keeping buffer cache hot.
+        """
+        if not pairs:
+            return {}
+
+        result: dict[tuple[str, str], list[str] | None] = {}
+        real_pairs: list[tuple[str, str]] = []
+        for src, tgt in pairs:
+            if src == tgt:
+                result[(src, tgt)] = [src]
+            else:
+                real_pairs.append((src, tgt))
+
+        if not real_pairs:
+            return result
+
+        g = self.graph_name
+        eid = (
+            """ag_catalog.agtype_access_operator"""
+            """(properties, '"entity_id"'::agtype)::text"""
+        )
+
+        src_labels = [
+            f'"{self._normalize_node_id(s)}"' for s, _ in real_pairs
         ]
+        tgt_labels = [
+            f'"{self._normalize_node_id(t)}"' for _, t in real_pairs
+        ]
+
+        query = f"""
+        WITH
+        pairs AS (
+            SELECT
+                ordinality - 1 AS pair_idx,
+                src_eid,
+                tgt_eid
+            FROM unnest($1::text[], $2::text[])
+                WITH ORDINALITY AS t(src_eid, tgt_eid)
+        ),
+        src_nodes AS (
+            SELECT p.pair_idx, b.id AS src_id
+            FROM pairs p
+            JOIN {g}.base b ON {eid} = p.src_eid
+        ),
+        tgt_nodes AS (
+            SELECT p.pair_idx, b.id AS tgt_id
+            FROM pairs p
+            JOIN {g}.base b ON {eid} = p.tgt_eid
+        ),
+        seeds AS (
+            SELECT s.pair_idx, s.src_id AS node_id,
+                   ARRAY[s.src_id] AS path, 1 AS depth, t.tgt_id
+            FROM src_nodes s
+            JOIN tgt_nodes t ON s.pair_idx = t.pair_idx
+        ),
+        bfs AS (
+            SELECT pair_idx, node_id, path, depth, tgt_id
+            FROM seeds
+
+            UNION ALL
+
+            (
+                SELECT b.pair_idx, e.end_id,
+                       b.path || e.end_id, b.depth + 1, b.tgt_id
+                FROM bfs b
+                JOIN {g}."DIRECTED" e ON e.start_id = b.node_id
+                WHERE b.depth <= $3
+                    AND NOT e.end_id = ANY(b.path)
+
+                UNION ALL
+
+                SELECT b.pair_idx, e.start_id,
+                       b.path || e.start_id, b.depth + 1, b.tgt_id
+                FROM bfs b
+                JOIN {g}."DIRECTED" e ON e.end_id = b.node_id
+                WHERE b.depth <= $3
+                    AND NOT e.start_id = ANY(b.path)
+            )
+        ),
+        found AS (
+            SELECT DISTINCT ON (pair_idx)
+                pair_idx, path
+            FROM bfs
+            WHERE node_id = tgt_id
+            ORDER BY pair_idx, depth
+        )
+        SELECT
+            f.pair_idx,
+            array_agg({eid} ORDER BY ord) AS path
+        FROM found f
+        JOIN LATERAL unnest(f.path)
+            WITH ORDINALITY AS u(vid, ord) ON true
+        JOIN {g}.base v ON v.id = u.vid
+        GROUP BY f.pair_idx;
+        """
+
+        try:
+            data = await self.db.query(
+                query, [src_labels, tgt_labels, max_depth], multirows=True
+            )
+        except Exception:
+            logger.warning("Batch path finding failed, falling back to individual queries")
+            for src, tgt in real_pairs:
+                result[(src, tgt)] = await self.find_shortest_path(
+                    src, tgt, max_depth
+                )
+            return result
+
+        found_map: dict[int, list[str]] = {}
+        if data:
+            for row in data:
+                idx = row["pair_idx"]
+                found_map[idx] = [p.strip('"') for p in row["path"]]
+
+        for idx, (src, tgt) in enumerate(real_pairs):
+            result[(src, tgt)] = found_map.get(idx)
+
+        return result
 
     @retry(
         stop=stop_after_attempt(3),

@@ -5256,11 +5256,9 @@ async def _find_transitive_paths(
     import time as _time
 
     _t0 = _time.monotonic()
-    path_tasks = [
-        knowledge_graph_inst.find_shortest_path(src, tgt, max_depth=max_depth)
-        for src, tgt in pairs
-    ]
-    path_results = await asyncio.gather(*path_tasks, return_exceptions=True)
+    batch_results = await knowledge_graph_inst.find_shortest_paths_batch(
+        pairs, max_depth=max_depth
+    )
     _elapsed = _time.monotonic() - _t0
     logger.info(
         f"Path finding: {len(pairs)} pairs, depth={max_depth}, took {_elapsed:.2f}s"
@@ -5272,10 +5270,8 @@ async def _find_transitive_paths(
     edge_pairs_to_fetch: list[tuple[str, str]] = []
     existing_entity_names = set(entity_names)
 
-    for result in path_results:
-        if isinstance(result, BaseException):
-            logger.warning(f"Path finding failed for one pair: {result}")
-            continue
+    for pair in pairs:
+        result = batch_results.get(pair)
         # Only keep paths with intermediate nodes (len > 2).
         # Direct edges (len == 2) are already captured by normal entity/relation retrieval.
         if result and len(result) > 2:
