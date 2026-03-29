@@ -4344,88 +4344,137 @@ class PGGraphStorage(BaseGraphStorage):
 
         return edges
 
+    async def _resolve_entity_id(self, entity_name: str) -> str | None:
+        """Resolve entity name to AGE internal graph ID."""
+        label = self._normalize_node_id(entity_name)
+        g = self.graph_name
+        eid_expr = (
+            "ag_catalog.agtype_access_operator"
+            "(properties, '\"entity_id\"'::agtype)::text"
+        )
+        query = (
+            f"SELECT id FROM {g}.base"
+            f" WHERE {eid_expr} = $1 LIMIT 1"
+        )
+        try:
+            data = await self.db.query(
+                query, [label], multirows=False,
+                with_age=True, graph_name=g,
+            )
+            return data["id"] if data else None
+        except Exception:
+            return None
+
+    async def _resolve_graph_ids_to_names(
+        self, graph_ids: list,
+    ) -> list[str]:
+        """Convert AGE internal graph IDs back to entity names."""
+        g = self.graph_name
+        eid_expr = (
+            "ag_catalog.agtype_access_operator"
+            "(properties, '\"entity_id\"'::agtype)::text"
+        )
+        names = []
+        for gid in graph_ids:
+            query = (
+                f"SELECT {eid_expr} AS name"
+                f" FROM {g}.base WHERE id = $1::graphid"
+            )
+            try:
+                data = await self.db.query(
+                    query, [gid], multirows=False,
+                    with_age=True, graph_name=g,
+                )
+                names.append(data["name"] if data else "?")
+            except Exception:
+                names.append("?")
+        return names
+
+    async def _fetch_neighbors_batch(
+        self, frontier_ids: list,
+    ) -> dict:
+        """Fetch all neighbors for a batch of node IDs in one query."""
+        g = self.graph_name
+        query = (
+            f"SELECT start_id, end_id FROM {g}.\"DIRECTED\""
+            f" WHERE start_id = ANY($1::graphid[])"
+            f" OR end_id = ANY($1::graphid[])"
+        )
+        try:
+            data = await self.db.query(
+                query, [frontier_ids], multirows=True,
+                with_age=True, graph_name=g,
+            )
+        except Exception:
+            return {}
+        adj: dict = {}
+        for row in data or []:
+            s, e = row["start_id"], row["end_id"]
+            adj.setdefault(s, []).append(e)
+            adj.setdefault(e, []).append(s)
+        return adj
+
     async def find_shortest_path(
         self, source_id: str, target_id: str, max_depth: int = 4
     ) -> list[str] | None:
-        """Find shortest path using recursive CTE over AGE internal tables.
+        """Find shortest path via Python-level BFS with batch edge fetching.
 
-        Uses a single BFS expansion with a pre-materialized undirected
-        edge list so PostgreSQL can use index scans efficiently.
+        Each BFS level fetches all neighbor edges in a single SQL query.
+        This avoids recursive CTE temp-space explosion on dense graphs.
         """
         if source_id == target_id:
             return [source_id]
 
-        src_label = self._normalize_node_id(source_id)
-        tgt_label = self._normalize_node_id(target_id)
-        g = self.graph_name
-        eid = (
-            """ag_catalog.agtype_access_operator"""
-            """(properties, '"entity_id"'::agtype)::text"""
-        )
-
-        query = f"""
-        WITH RECURSIVE
-        src AS (
-            SELECT id FROM {g}.base
-            WHERE {eid} = '"{src_label}"'
-            LIMIT 1
-        ),
-        tgt AS (
-            SELECT id FROM {g}.base
-            WHERE {eid} = '"{tgt_label}"'
-            LIMIT 1
-        ),
-        edges AS (
-            SELECT start_id AS n1, end_id AS n2
-            FROM {g}."DIRECTED"
-            UNION ALL
-            SELECT end_id AS n1, start_id AS n2
-            FROM {g}."DIRECTED"
-        ),
-        bfs AS (
-            SELECT s.id AS node_id, ARRAY[s.id] AS path, 1 AS depth
-            FROM src s
-
-            UNION ALL
-
-            SELECT e.n2, b.path || e.n2, b.depth + 1
-            FROM bfs b
-            JOIN edges e ON e.n1 = b.node_id
-            WHERE b.depth <= $1
-                AND NOT e.n2 = ANY(b.path)
-        )
-        SELECT array_agg({eid} ORDER BY ord) AS path
-        FROM (
-            SELECT path, depth
-            FROM bfs CROSS JOIN tgt t
-            WHERE node_id = t.id
-            ORDER BY depth
-            LIMIT 1
-        ) shortest
-        JOIN LATERAL unnest(shortest.path)
-            WITH ORDINALITY AS u(vid, ord) ON true
-        JOIN {g}.base v ON v.id = u.vid;
-        """
-
-        try:
-            data = await self.db.query(query, [max_depth], multirows=True)
-        except Exception:
+        src_gid = await self._resolve_entity_id(source_id)
+        tgt_gid = await self._resolve_entity_id(target_id)
+        if not src_gid or not tgt_gid:
             return None
 
-        if not data or not data[0] or not data[0].get("path"):
+        from collections import deque
+
+        visited = {src_gid}
+        queue: deque[tuple[str, list]] = deque([(src_gid, [src_gid])])
+        found_path = None
+
+        while queue and not found_path:
+            frontier = []
+            while queue:
+                node_id, path = queue.popleft()
+                if len(path) - 1 >= max_depth:
+                    continue
+                frontier.append((node_id, path))
+
+            if not frontier:
+                break
+
+            frontier_ids = [n for n, _ in frontier]
+            adj = await self._fetch_neighbors_batch(frontier_ids)
+
+            for node_id, path in frontier:
+                for neighbor in adj.get(node_id, []):
+                    if neighbor == tgt_gid:
+                        found_path = path + [neighbor]
+                        break
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append((neighbor, path + [neighbor]))
+                if found_path:
+                    break
+
+        if not found_path:
             return None
 
-        return [p.strip('"') for p in data[0]["path"]]
+        return await self._resolve_graph_ids_to_names(found_path)
 
     async def find_shortest_paths_batch(
         self,
         pairs: list[tuple[str, str]],
         max_depth: int = 4,
     ) -> dict[tuple[str, str], list[str] | None]:
-        """Find shortest paths for multiple pairs in a single SQL query.
+        """Find shortest paths for multiple pairs using shared BFS.
 
-        Runs one recursive CTE that BFS-expands all source nodes simultaneously,
-        avoiding N separate round-trips and keeping buffer cache hot.
+        All pairs share the same neighbor-fetch query per BFS level,
+        reducing round-trips from N*depth to just depth.
         """
         if not pairs:
             return {}
@@ -4441,104 +4490,89 @@ class PGGraphStorage(BaseGraphStorage):
         if not real_pairs:
             return result
 
-        g = self.graph_name
-        eid = (
-            """ag_catalog.agtype_access_operator"""
-            """(properties, '"entity_id"'::agtype)::text"""
-        )
+        # Resolve all unique entity names to graph IDs
+        all_names = set()
+        for s, t in real_pairs:
+            all_names.add(s)
+            all_names.add(t)
 
-        src_labels = [
-            f'"{self._normalize_node_id(s)}"' for s, _ in real_pairs
-        ]
-        tgt_labels = [
-            f'"{self._normalize_node_id(t)}"' for _, t in real_pairs
-        ]
+        name_to_gid: dict[str, str | None] = {}
+        for name in all_names:
+            name_to_gid[name] = await self._resolve_entity_id(name)
 
-        query = f"""
-        WITH RECURSIVE
-        pairs AS (
-            SELECT
-                ordinality - 1 AS pair_idx,
-                src_eid,
-                tgt_eid
-            FROM unnest($1::text[], $2::text[])
-                WITH ORDINALITY AS t(src_eid, tgt_eid)
-        ),
-        src_nodes AS (
-            SELECT p.pair_idx, b.id AS src_id
-            FROM pairs p
-            JOIN {g}.base b ON {eid} = p.src_eid
-        ),
-        tgt_nodes AS (
-            SELECT p.pair_idx, b.id AS tgt_id
-            FROM pairs p
-            JOIN {g}.base b ON {eid} = p.tgt_eid
-        ),
-        edges AS (
-            SELECT start_id AS n1, end_id AS n2
-            FROM {g}."DIRECTED"
-            UNION ALL
-            SELECT end_id AS n1, start_id AS n2
-            FROM {g}."DIRECTED"
-        ),
-        seeds AS (
-            SELECT s.pair_idx, s.src_id AS node_id,
-                   ARRAY[s.src_id] AS path, 1 AS depth, t.tgt_id
-            FROM src_nodes s
-            JOIN tgt_nodes t ON s.pair_idx = t.pair_idx
-        ),
-        bfs AS (
-            SELECT pair_idx, node_id, path, depth, tgt_id
-            FROM seeds
+        from collections import deque
 
-            UNION ALL
-
-            SELECT b.pair_idx, e.n2,
-                   b.path || e.n2, b.depth + 1, b.tgt_id
-            FROM bfs b
-            JOIN edges e ON e.n1 = b.node_id
-            WHERE b.depth <= $3
-                AND NOT e.n2 = ANY(b.path)
-        ),
-        found AS (
-            SELECT DISTINCT ON (pair_idx)
-                pair_idx, path
-            FROM bfs
-            WHERE node_id = tgt_id
-            ORDER BY pair_idx, depth
-        )
-        SELECT
-            f.pair_idx,
-            array_agg({eid} ORDER BY ord) AS path
-        FROM found f
-        JOIN LATERAL unnest(f.path)
-            WITH ORDINALITY AS u(vid, ord) ON true
-        JOIN {g}.base v ON v.id = u.vid
-        GROUP BY f.pair_idx;
-        """
-
-        try:
-            data = await self.db.query(
-                query, [src_labels, tgt_labels, max_depth], multirows=True
-            )
-        except Exception:
-            logger.warning(
-                "Batch path finding failed, falling back to individual queries"
-            )
-            for src, tgt in real_pairs:
-                result[(src, tgt)] = await self.find_shortest_path(
-                    src, tgt, max_depth
-                )
-            return result
-
-        found_map: dict[int, list[str]] = {}
-        if data:
-            for row in data:
-                idx = row["pair_idx"]
-                found_map[idx] = [p.strip('"') for p in row["path"]]
+        # Per-pair BFS state: {pair_idx: {tgt, visited, queue}}
+        found_raw: dict[int, list | None] = {}
+        active: dict[int, dict] = {}
 
         for idx, (src, tgt) in enumerate(real_pairs):
-            result[(src, tgt)] = found_map.get(idx)
+            src_gid = name_to_gid.get(src)
+            tgt_gid = name_to_gid.get(tgt)
+            if not src_gid or not tgt_gid:
+                found_raw[idx] = None
+                continue
+            found_raw[idx] = None
+            active[idx] = {
+                "tgt_gid": tgt_gid,
+                "visited": {src_gid},
+                "queue": deque([(src_gid, [src_gid])]),
+            }
+
+        for _depth in range(max_depth):
+            if not active:
+                break
+
+            # Collect frontier nodes across ALL active pairs
+            all_frontier_ids: set = set()
+            pair_frontiers: dict[int, list[tuple]] = {}
+            for idx, state in active.items():
+                frontier = []
+                while state["queue"]:
+                    node_id, path = state["queue"].popleft()
+                    if len(path) - 1 >= max_depth:
+                        continue
+                    frontier.append((node_id, path))
+                    all_frontier_ids.add(node_id)
+                pair_frontiers[idx] = frontier
+
+            if not all_frontier_ids:
+                break
+
+            # Single batch SQL for all pairs at this depth
+            adj = await self._fetch_neighbors_batch(
+                list(all_frontier_ids)
+            )
+
+            done = []
+            for idx, frontier in pair_frontiers.items():
+                state = active[idx]
+                for node_id, path in frontier:
+                    for neighbor in adj.get(node_id, []):
+                        if neighbor == state["tgt_gid"]:
+                            found_raw[idx] = path + [neighbor]
+                            done.append(idx)
+                            break
+                        if neighbor not in state["visited"]:
+                            state["visited"].add(neighbor)
+                            state["queue"].append(
+                                (neighbor, path + [neighbor])
+                            )
+                    if idx in done:
+                        break
+
+            for idx in done:
+                del active[idx]
+
+        # Resolve graph IDs to entity names
+        for idx, (src, tgt) in enumerate(real_pairs):
+            raw = found_raw.get(idx)
+            if raw:
+                result[(src, tgt)] = (
+                    await self._resolve_graph_ids_to_names(raw)
+                )
+            else:
+                result[(src, tgt)] = None
 
         return result
 
