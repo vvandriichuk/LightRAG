@@ -428,9 +428,6 @@
       "maxRelationTokensTooltip": "Maximale Anzahl von Tokens, die für den Beziehungskontext im einheitlichen Token-Kontrollsystem zugewiesen werden",
       "maxTotalTokens": "Max. Gesamt-Tokens",
       "maxTotalTokensTooltip": "Maximales Gesamt-Token-Budget für den gesamten Abfragekontext (Entitäten + Beziehungen + Chunks + System-Prompt)",
-      "historyTurns": "Verlaufsturns",
-      "historyTurnsTooltip": "Anzahl der vollständigen Konversationsturns (Benutzer-Assistenten-Paare), die im Antwortkontext berücksichtigt werden sollen",
-      "historyTurnsPlaceholder": "Anzahl der Verlaufsturns",
       "onlyNeedContext": "Nur Kontext benötigt",
       "onlyNeedContextTooltip": "Wenn True, wird nur der abgerufene Kontext ohne Generierung einer Antwort zurückgegeben",
       "onlyNeedPrompt": "Nur Prompt benötigt",
@@ -441,7 +438,11 @@
       "userPromptTooltip": "Geben Sie zusätzliche Antwortanforderungen an das LLM an (unabhängig vom Abfrageinhalt, nur für die Ausgabeverarbeitung).",
       "userPromptPlaceholder": "Benutzerdefinierten Prompt eingeben (optional)",
       "enableRerank": "Rerank aktivieren",
-      "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True."
+      "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True.",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

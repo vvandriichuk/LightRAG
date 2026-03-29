@@ -428,9 +428,6 @@
       "maxRelationTokensTooltip": "Số lượng token tối đa được phân bổ cho ngữ cảnh quan hệ trong hệ thống kiểm soát token thống nhất",
       "maxTotalTokens": "Tổng Token Tối Đa",
       "maxTotalTokensTooltip": "Ngân sách token tổng tối đa cho toàn bộ ngữ cảnh truy vấn (thực thể + quan hệ + đoạn + lời nhắc hệ thống)",
-      "historyTurns": "Lượt Lịch Sử",
-      "historyTurnsTooltip": "Số lượt hội thoại hoàn chỉnh (cặp người dùng-trợ lý) cần xem xét trong ngữ cảnh phản hồi",
-      "historyTurnsPlaceholder": "Số lượt lịch sử",
       "onlyNeedContext": "Chỉ Cần Ngữ Cảnh",
       "onlyNeedContextTooltip": "Nếu True, chỉ trả về ngữ cảnh đã truy xuất mà không tạo phản hồi",
       "onlyNeedPrompt": "Chỉ Cần Lời Nhắc",
@@ -441,7 +438,11 @@
       "userPromptTooltip": "Cung cấp yêu cầu phản hồi bổ sung cho LLM (không liên quan đến nội dung truy vấn, chỉ để xử lý đầu ra).",
       "userPromptPlaceholder": "Nhập lời nhắc tùy chỉnh (tùy chọn)",
       "enableRerank": "Bật Xếp Hạng Lại",
-      "enableRerankTooltip": "Bật xếp hạng lại cho các đoạn văn bản đã truy xuất. Nếu True nhưng không có mô hình rerank nào được cấu hình, một cảnh báo sẽ được đưa ra. Mặc định là True."
+      "enableRerankTooltip": "Bật xếp hạng lại cho các đoạn văn bản đã truy xuất. Nếu True nhưng không có mô hình rerank nào được cấu hình, một cảnh báo sẽ được đưa ra. Mặc định là True.",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

@@ -2751,6 +2751,7 @@ class LightRAG:
             enable_rerank=param.enable_rerank,
             enable_path_finding=param.enable_path_finding,
             path_finding_max_depth=param.path_finding_max_depth,
+            enable_query_rewriting=param.enable_query_rewriting,
         )
 
         query_result = None

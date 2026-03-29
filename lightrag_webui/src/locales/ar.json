@@ -428,9 +428,6 @@
       "maxRelationTokensTooltip": "الحد الأقصى لعدد الرموز المخصصة لسياق العلاقة في نظام التحكم الموحد في الرموز",
       "maxTotalTokens": "إجمالي الحد الأقصى للرموز",
       "maxTotalTokensTooltip": "الحد الأقصى الإجمالي لميزانية الرموز لسياق الاستعلام بالكامل (الكيانات + العلاقات + الأجزاء + موجه النظام)",
-      "historyTurns": "أدوار التاريخ",
-      "historyTurnsTooltip": "عدد الدورات الكاملة للمحادثة (أزواج المستخدم-المساعد) التي يجب مراعاتها في سياق الرد",
-      "historyTurnsPlaceholder": "عدد دورات التاريخ",
       "onlyNeedContext": "تحتاج فقط إلى السياق",
       "onlyNeedContextTooltip": "إذا كان صحيحًا، يتم إرجاع السياق المسترجع فقط دون إنشاء رد",
       "onlyNeedPrompt": "تحتاج فقط إلى المطالبة",
@@ -441,7 +438,11 @@
       "userPromptTooltip": "تقديم متطلبات استجابة إضافية إلى نموذج اللغة الكبير (غير متعلقة بمحتوى الاستعلام، فقط لمعالجة المخرجات).",
       "userPromptPlaceholder": "أدخل مطالبة مخصصة (اختياري)",
       "enableRerank": "تمكين إعادة الترتيب",
-      "enableRerankTooltip": "تمكين إعادة ترتيب أجزاء النص المسترجعة. إذا كان True ولكن لم يتم تكوين نموذج إعادة الترتيب، فسيتم إصدار تحذير. افتراضي True."
+      "enableRerankTooltip": "تمكين إعادة ترتيب أجزاء النص المسترجعة. إذا كان True ولكن لم يتم تكوين نموذج إعادة الترتيب، فسيتم إصدار تحذير. افتراضي True.",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

@@ -428,9 +428,6 @@
       "maxRelationTokensTooltip": "统一令牌控制系统中分配给关系上下文的最大令牌数",
       "maxTotalTokens": "总令牌数上限",
       "maxTotalTokensTooltip": "整个查询上下文的最大总令牌预算（实体+关系+文档块+系统提示）",
-      "historyTurns": "历史轮次",
-      "historyTurnsTooltip": "响应上下文中考虑的完整对话轮次（用户-助手对）数量",
-      "historyTurnsPlaceholder": "历史轮次数",
       "onlyNeedContext": "仅需上下文",
       "onlyNeedContextTooltip": "如果为True，仅返回检索到的上下文而不生成响应",
       "onlyNeedPrompt": "仅需提示",
@@ -441,7 +438,11 @@
       "userPromptTooltip": "向LLM提供额外的响应要求（与查询内容无关，仅用于处理输出）。",
       "userPromptPlaceholder": "输入自定义提示词（可选）",
       "enableRerank": "启用重排",
-      "enableRerankTooltip": "为检索到的文本块启用重排。如果为True但未配置重排模型，将发出警告。默认为True。"
+      "enableRerankTooltip": "为检索到的文本块启用重排。如果为True但未配置重排模型，将发出警告。默认为True。",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

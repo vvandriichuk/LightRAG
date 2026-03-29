@@ -135,13 +135,14 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    # History mesages is only send to LLM for context, not used for retrieval
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
+    When enable_query_rewriting is True, history is used to rewrite the query for better retrieval.
+    History is also sent to the LLM for the final answer generation.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
+    # Used by frontend to determine how many turns to include in conversation_history
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
@@ -175,6 +176,11 @@ class QueryParam:
 
     path_finding_max_depth: int = int(os.getenv("PATH_FINDING_MAX_DEPTH", "4"))
     """Max hops for BFS path finding between entities. Default 4."""
+
+    enable_query_rewriting: bool = os.getenv("ENABLE_QUERY_REWRITING", "true").lower() == "true"
+    """Rewrite follow-up queries using conversation history for better retrieval.
+    When enabled and conversation_history is provided, the query is rewritten
+    into a standalone question before keyword extraction and vector search."""
 
 
 @dataclass

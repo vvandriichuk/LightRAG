@@ -440,9 +440,6 @@
       "maxRelationTokensTooltip": "Maximum number of tokens allocated for relationship context in unified token control system",
       "maxTotalTokens": "Max Total Tokens",
       "maxTotalTokensTooltip": "Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)",
-      "historyTurns": "History Turns",
-      "historyTurnsTooltip": "Number of complete conversation turns (user-assistant pairs) to consider in the response context",
-      "historyTurnsPlaceholder": "Number of history turns",
       "onlyNeedContext": "Only Need Context",
       "onlyNeedContextTooltip": "If True, only returns the retrieved context without generating a response",
       "onlyNeedPrompt": "Only Need Prompt",
@@ -453,7 +450,11 @@
       "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
       "enableRerank": "Enable Rerank",
-      "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
+      "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

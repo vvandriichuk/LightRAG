@@ -422,9 +422,6 @@
       "chunkTopK": "文本區塊 Top K",
       "chunkTopKTooltip": "文本區塊檢索數量，適用於所有模式。",
       "chunkTopKPlaceholder": "輸入文本區塊 chunk_top_k 值",
-      "historyTurns": "歷史輪次",
-      "historyTurnsTooltip": "回應上下文中考慮的完整對話輪次（使用者-助手對）數量",
-      "historyTurnsPlaceholder": "歷史輪次數",
       "onlyNeedContext": "僅需上下文",
       "onlyNeedContextTooltip": "如果為True，僅回傳檢索到的上下文而不產生回應",
       "onlyNeedPrompt": "僅需提示",
@@ -441,7 +438,11 @@
       "maxRelationTokens": "關係令牌數上限",
       "maxRelationTokensTooltip": "統一令牌控制系統中分配給關係上下文的最大令牌數",
       "maxTotalTokens": "總令牌數上限",
-      "maxTotalTokensTooltip": "整個查詢上下文的最大總令牌預算（實體+關係+文檔塊+系統提示）"
+      "maxTotalTokensTooltip": "整個查詢上下文的最大總令牌預算（實體+關係+文檔塊+系統提示）",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

@@ -428,9 +428,6 @@
       "maxRelationTokensTooltip": "Максимальна кількість токенів, виділених для контексту відношень в уніфікованій системі контролю токенів",
       "maxTotalTokens": "Макс. загальна кількість токенів",
       "maxTotalTokensTooltip": "Максимальний загальний бюджет токенів для всього контексту запиту (сутності + відношення + чанки + системний промпт)",
-      "historyTurns": "Хідів історії",
-      "historyTurnsTooltip": "Кількість повних ходів розмови (пари користувач-асистент) для врахування в контексті відповіді",
-      "historyTurnsPlaceholder": "Кількість ходів історії",
       "onlyNeedContext": "Потрібен лише контекст",
       "onlyNeedContextTooltip": "Якщо True, повертає лише отриманий контекст без генерації відповіді",
       "onlyNeedPrompt": "Потрібен лише промпт",
@@ -441,7 +438,11 @@
       "userPromptTooltip": "Надайте додаткові вимоги до відповіді для LLM (не пов'язані з вмістом запиту, лише для обробки виводу).",
       "userPromptPlaceholder": "Введіть користувацький промпт (необов'язково)",
       "enableRerank": "Увімкнути реранк",
-      "enableRerankTooltip": "Увімкнути реранкінг для отриманих текстових чанків. Якщо True, але модель реранкера не налаштована, буде видано попередження. За замовчуванням True."
+      "enableRerankTooltip": "Увімкнути реранкінг для отриманих текстових чанків. Якщо True, але модель реранкера не налаштована, буде видано попередження. За замовчуванням True.",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

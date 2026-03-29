@@ -428,9 +428,6 @@
       "maxRelationTokensTooltip": "통합 토큰 제어 시스템에서 관계 컨텍스트에 할당된 최대 토큰 수",
       "maxTotalTokens": "최대 총 토큰",
       "maxTotalTokensTooltip": "전체 쿼리 컨텍스트(엔티티 + 관계 + 청크 + 시스템 프롬프트)에 대한 최대 총 토큰 예산",
-      "historyTurns": "대화 턴 수",
-      "historyTurnsTooltip": "응답 컨텍스트에서 고려할 전체 대화 턴(사용자-어시스턴트 쌍) 수",
-      "historyTurnsPlaceholder": "대화 턴 수",
       "onlyNeedContext": "컨텍스트만 필요",
       "onlyNeedContextTooltip": "True일 경우, 응답을 생성하지 않고 검색된 컨텍스트만 반환합니다",
       "onlyNeedPrompt": "프롬프트만 필요",
@@ -441,7 +438,11 @@
       "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다 (쿼리 내용과 무관, 출력 처리에만 사용).",
       "userPromptPlaceholder": "사용자 지정 프롬프트 입력 (선택 사항)",
       "enableRerank": "Rerank 활성화",
-      "enableRerankTooltip": "검색된 텍스트 청크에 대해 Rerank를 활성화합니다. True이지만 Rerank 모델이 구성되지 않은 경우 경고가 발생합니다. 기본값은 True입니다."
+      "enableRerankTooltip": "검색된 텍스트 청크에 대해 Rerank를 활성화합니다. True이지만 Rerank 모델이 구성되지 않은 경우 경고가 발생합니다. 기본값은 True입니다.",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

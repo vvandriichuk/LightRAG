@@ -352,6 +352,43 @@ export default function QuerySettings() {
               </div>
             </>
 
+            {/* History Turns */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="history_turns" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.historyTurns')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.historyTurnsTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div className="flex items-center gap-1">
+                <Input
+                  id="history_turns"
+                  type="number"
+                  value={querySettings.history_turns ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    handleChange('history_turns', value === '' ? '' : parseInt(value) || 0)
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    if (value === '' || isNaN(parseInt(value))) {
+                      handleChange('history_turns', 3)
+                    }
+                  }}
+                  min={0}
+                  max={10}
+                  placeholder="3"
+                  className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                />
+              </div>
+            </>
+
             {/* Toggle Options */}
             <>
               <div className="flex items-center gap-2">
@@ -372,6 +409,27 @@ export default function QuerySettings() {
                   id="enable_rerank"
                   checked={querySettings.enable_rerank}
                   onCheckedChange={(checked) => handleChange('enable_rerank', checked)}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="enable_query_rewriting" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.enableQueryRewriting')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.enableQueryRewritingTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="enable_query_rewriting"
+                  checked={querySettings.enable_query_rewriting !== false}
+                  onCheckedChange={(checked) => handleChange('enable_query_rewriting', checked)}
                 />
               </div>
 

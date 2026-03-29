@@ -82,7 +82,7 @@ class QueryRequest(BaseModel):
 
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
         default=None,
-        description="History messages are only sent to LLM for context, not used for retrieval. Format: [{'role': 'user/assistant', 'content': 'message'}].",
+        description="Conversation history for context. When enable_query_rewriting is True, history is used to rewrite follow-up queries for better retrieval. Also sent to LLM for answer generation. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
     user_prompt: Optional[str] = Field(
@@ -121,6 +121,13 @@ class QueryRequest(BaseModel):
         ge=1,
         le=10,
         description="Max hops for BFS path finding between entities. Default 4.",
+    )
+
+    enable_query_rewriting: Optional[bool] = Field(
+        default=None,
+        description="Rewrite follow-up queries using conversation history for better retrieval. "
+        "When enabled and conversation_history is provided, the query is rewritten "
+        "into a standalone question before keyword extraction and vector search.",
     )
 
     @field_validator("query", mode="after")
@@ -350,7 +357,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **mix**: Integrates knowledge graph retrieval with vector search (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
 
-        conversation_history parameteris sent to LLM only, does not affect retrieval results.
+        When enable_query_rewriting is True (default), conversation_history is used to rewrite follow-up queries for better retrieval.
 
         **Usage Examples:**
 
@@ -575,7 +582,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **mix**: Integrated knowledge graph + vector retrieval (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
 
-        conversation_history parameteris sent to LLM only, does not affect retrieval results.
+        When enable_query_rewriting is True (default), conversation_history is used to rewrite follow-up queries for better retrieval.
 
         **Usage Examples**
 

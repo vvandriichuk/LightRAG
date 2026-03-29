@@ -510,14 +510,20 @@ class OllamaAPI:
                 if user_prompt is not None:
                     param_dict["user_prompt"] = user_prompt
 
-                # Pass through path finding options from request if provided
+                # Pass through options from request if provided
                 options = getattr(request, "options", None) or {}
-                if options.get("enable_path_finding"):
-                    param_dict["enable_path_finding"] = True
+                if "enable_path_finding" in options:
+                    param_dict["enable_path_finding"] = str(
+                        options["enable_path_finding"]
+                    ).lower() not in ("false", "0", "no", "")
                 if "path_finding_max_depth" in options:
                     param_dict["path_finding_max_depth"] = int(
                         options["path_finding_max_depth"]
                     )
+                if "enable_query_rewriting" in options:
+                    param_dict["enable_query_rewriting"] = str(
+                        options["enable_query_rewriting"]
+                    ).lower() not in ("false", "0", "no", "")
 
                 query_param = QueryParam(**param_dict)
 

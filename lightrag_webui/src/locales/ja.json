@@ -428,9 +428,6 @@
       "maxRelationTokensTooltip": "統一トークン制御システムで関係コンテキストに割り当てられる最大トークン数",
       "maxTotalTokens": "最大合計トークン数",
       "maxTotalTokensTooltip": "クエリコンテキスト全体（エンティティ+関係+チャンク+システムプロンプト）の最大合計トークン予算",
-      "historyTurns": "履歴ターン数",
-      "historyTurnsTooltip": "応答コンテキストで考慮する完全な会話ターン（ユーザー-アシスタントペア）の数",
-      "historyTurnsPlaceholder": "履歴ターン数",
       "onlyNeedContext": "コンテキストのみ必要",
       "onlyNeedContextTooltip": "Trueの場合、応答を生成せずに取得されたコンテキストのみを返します",
       "onlyNeedPrompt": "プロンプトのみ必要",
@@ -441,7 +438,11 @@
       "userPromptTooltip": "LLMに追加の応答要件を提供します（クエリコンテンツとは無関係で、出力処理のみに使用）。",
       "userPromptPlaceholder": "カスタムプロンプトを入力（オプション）",
       "enableRerank": "リランクを有効化",
-      "enableRerankTooltip": "取得されたテキストチャンクのリランクを有効にします。Trueに設定してもリランクモデルが設定されていない場合、警告が発行されます。デフォルトはTrueです。"
+      "enableRerankTooltip": "取得されたテキストチャンクのリランクを有効にします。Trueに設定してもリランクモデルが設定されていない場合、警告が発行されます。デフォルトはTrueです。",
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of conversation turns to include as context. Enables follow-up questions by rewriting queries with conversation history. Set to 0 to disable.",
+      "enableQueryRewriting": "Query Rewriting",
+      "enableQueryRewritingTooltip": "Rewrite follow-up queries using conversation history for better retrieval. When enabled, pronouns and references are replaced with explicit entity names before search."
     }
   },
   "apiSite": {

@@ -410,3 +410,18 @@ Output:
 
 """,
 ]
+
+PROMPTS["query_rewrite"] = """Given the conversation history and a follow-up question, rewrite the follow-up question to be a standalone question that contains all necessary context.
+
+---Conversation History---
+{conversation_history}
+
+---Follow-up Question---
+{query}
+
+---Rules---
+1. If the follow-up question is already standalone (no references to history), return it unchanged.
+2. Replace pronouns and references with explicit entity names from the history.
+3. Preserve the original language of the question.
+4. Return ONLY the rewritten question, nothing else.
+"""

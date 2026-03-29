@@ -348,11 +348,8 @@ export default function RetrievalTesting() {
       // Determine the effective mode
       const effectiveMode = modeOverride || state.querySettings.mode
 
-      // Determine effective history turns with bypass override
-      const configuredHistoryTurns = state.querySettings.history_turns || 0
-      const effectiveHistoryTurns = (effectiveMode === 'bypass' && configuredHistoryTurns === 0)
-        ? 3
-        : configuredHistoryTurns
+      // Use configured history turns for all modes
+      const effectiveHistoryTurns = state.querySettings.history_turns || 0
 
       const queryParams = {
         ...state.querySettings,

@@ -3847,8 +3847,13 @@ async def kg_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
+    # Rewrite follow-up query into standalone question using conversation history
+    retrieval_query = await rewrite_query_with_history(
+        query, query_param.conversation_history, query_param, global_config, hashing_kv
+    )
+
     hl_keywords, ll_keywords = await get_keywords_from_query(
-        query, query_param, global_config, hashing_kv
+        retrieval_query, query_param, global_config, hashing_kv
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
@@ -3860,9 +3865,9 @@ async def kg_query(
     if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
         logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
-        if len(query) < 50:
-            logger.warning(f"Forced low_level_keywords to origin query: {query}")
-            ll_keywords = [query]
+        if len(retrieval_query) < 50:
+            logger.warning(f"Forced low_level_keywords to origin query: {retrieval_query}")
+            ll_keywords = [retrieval_query]
         else:
             return QueryResult(content=PROMPTS["fail_response"])
 
@@ -3871,7 +3876,7 @@ async def kg_query(
 
     # Build query context (unified interface)
     context_result = await _build_query_context(
-        query,
+        retrieval_query,
         ll_keywords_str,
         hl_keywords_str,
         knowledge_graph_inst,
@@ -3920,10 +3925,12 @@ async def kg_query(
         f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
     )
 
-    # Handle cache
+    # Handle cache — include both original query (used for LLM answer) and
+    # retrieval_query (used for search) to avoid collisions when rewriting changes the query
     args_hash = compute_args_hash(
         query_param.mode,
         query,
+        retrieval_query,
         query_param.response_type,
         query_param.top_k,
         query_param.chunk_top_k,
@@ -3936,6 +3943,7 @@ async def kg_query(
         query_param.enable_rerank,
         query_param.enable_path_finding,
         query_param.path_finding_max_depth,
+        query_param.enable_query_rewriting,
     )
 
     cached_result = await handle_cache(
@@ -3972,13 +3980,14 @@ async def kg_query(
                 "enable_rerank": query_param.enable_rerank,
                 "enable_path_finding": query_param.enable_path_finding,
                 "path_finding_max_depth": query_param.path_finding_max_depth,
+                "enable_query_rewriting": query_param.enable_query_rewriting,
             }
             await save_to_cache(
                 hashing_kv,
                 CacheData(
                     args_hash=args_hash,
                     content=response,
-                    prompt=query,
+                    prompt=retrieval_query,
                     mode=query_param.mode,
                     cache_type="query",
                     queryparam=queryparam_dict,
@@ -4007,6 +4016,73 @@ async def kg_query(
             raw_data=context_result.raw_data,
             is_streaming=True,
         )
+
+
+async def rewrite_query_with_history(
+    query: str,
+    conversation_history: list[dict[str, str]] | None,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> str:
+    """Rewrite a follow-up query into a standalone question using conversation history.
+
+    If conversation_history is empty or query_rewriting is disabled, returns the original query.
+    The rewritten query is used for keyword extraction and vector search,
+    while the original query is preserved for the final LLM answer.
+
+    Args:
+        query: The user's follow-up query
+        conversation_history: List of {"role": ..., "content": ...} messages
+        query_param: Query parameters
+        global_config: Global configuration dictionary
+        hashing_kv: Optional key-value storage for caching results
+
+    Returns:
+        The rewritten standalone query, or the original query if rewriting is skipped.
+    """
+    if not query_param.enable_query_rewriting:
+        return query
+
+    if not conversation_history:
+        return query
+
+    # Format history into text (frontend already truncates based on history_turns)
+    history_text = "\n".join(
+        f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
+        for msg in conversation_history
+    )
+
+    prompt = PROMPTS["query_rewrite"].format(
+        conversation_history=history_text,
+        query=query,
+    )
+
+    if query_param.model_func:
+        use_llm_func = query_param.model_func
+    else:
+        use_llm_func = global_config["llm_model_func"]
+        use_llm_func = partial(use_llm_func, _priority=5)
+
+    try:
+        rewritten_query, _ = await use_llm_func_with_cache(
+            prompt,
+            use_llm_func,
+            llm_response_cache=hashing_kv,
+            system_prompt="You are a query rewriting assistant. Output only the rewritten question with no explanation or preamble.",
+            cache_type="query_rewrite",
+        )
+        rewritten_query = rewritten_query.strip()
+        if rewritten_query:
+            logger.info(
+                f"Query rewritten: '{query}' -> '{rewritten_query}'"
+            )
+            return rewritten_query
+        logger.warning("Query rewriting returned empty result, using original query")
+    except Exception as e:
+        logger.warning(f"Query rewriting failed, using original query: {e}")
+
+    return query
 
 
 async def get_keywords_from_query(
@@ -5789,7 +5865,12 @@ async def naive_query(
         logger.error("Tokenizer not found in global configuration.")
         return QueryResult(content=PROMPTS["fail_response"])
 
-    chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
+    # Rewrite follow-up query into standalone question using conversation history
+    retrieval_query = await rewrite_query_with_history(
+        query, query_param.conversation_history, query_param, global_config, hashing_kv
+    )
+
+    chunks = await _get_vector_context(retrieval_query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
         logger.info(
@@ -5914,10 +5995,11 @@ async def naive_query(
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
-    # Handle cache
+    # Handle cache — include both original query and retrieval_query to avoid collisions
     args_hash = compute_args_hash(
         query_param.mode,
         query,
+        retrieval_query,
         query_param.response_type,
         query_param.top_k,
         query_param.chunk_top_k,
@@ -5928,6 +6010,7 @@ async def naive_query(
         query_param.enable_rerank,
         query_param.enable_path_finding,
         query_param.path_finding_max_depth,
+        query_param.enable_query_rewriting,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
@@ -5960,13 +6043,14 @@ async def naive_query(
                 "enable_rerank": query_param.enable_rerank,
                 "enable_path_finding": query_param.enable_path_finding,
                 "path_finding_max_depth": query_param.path_finding_max_depth,
+                "enable_query_rewriting": query_param.enable_query_rewriting,
             }
             await save_to_cache(
                 hashing_kv,
                 CacheData(
                     args_hash=args_hash,
                     content=response,
-                    prompt=query,
+                    prompt=retrieval_query,
                     mode=query_param.mode,
                     cache_type="query",
                     queryparam=queryparam_dict,

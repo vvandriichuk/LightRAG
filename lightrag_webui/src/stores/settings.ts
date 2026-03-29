@@ -131,9 +131,10 @@ const useSettingsStoreBase = create<SettingsState>()(
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
-        history_turns: 0,
+        history_turns: 3,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: true,
+        enable_query_rewriting: true
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -189,11 +190,8 @@ const useSettingsStoreBase = create<SettingsState>()(
       setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
 
       updateQuerySettings: (settings: Partial<QueryRequest>) => {
-        // Filter out history_turns to prevent changes, always keep it as 0
-        const filteredSettings = { ...settings }
-        delete filteredSettings.history_turns
         set((state) => ({
-          querySettings: { ...state.querySettings, ...filteredSettings, history_turns: 0 }
+          querySettings: { ...state.querySettings, ...settings }
         }))
       },
 
@@ -238,7 +236,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -339,6 +337,12 @@ const useSettingsStoreBase = create<SettingsState>()(
           // Remove deprecated response_type parameter
           if (state.querySettings) {
             delete state.querySettings.response_type
+          }
+        }
+        if (version < 20) {
+          // Enable conversation history for all query modes (previously forced to 0)
+          if (state.querySettings) {
+            state.querySettings.history_turns = 3
           }
         }
         return state

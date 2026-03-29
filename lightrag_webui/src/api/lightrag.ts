@@ -138,6 +138,8 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Rewrite follow-up queries using conversation history for better retrieval. Default is True. */
+  enable_query_rewriting?: boolean
 }
 
 export type QueryResponse = {
