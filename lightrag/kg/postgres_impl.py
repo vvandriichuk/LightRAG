@@ -4355,11 +4355,16 @@ class PGGraphStorage(BaseGraphStorage):
     async def _resolve_entity_ids_batch(
         self, names: list[str],
     ) -> dict[str, str | None]:
-        """Resolve multiple entity names to AGE graph IDs in one query."""
+        """Resolve multiple entity names to AGE graph IDs in one query.
+
+        Note: do NOT apply _normalize_node_id here — that escapes for Cypher
+        string interpolation, but parameterized SQL handles special chars safely.
+        The DB stores unescaped values (Cypher un-escapes on INSERT).
+        graphid values are returned as strings by asyncpg — pass them as-is.
+        """
         if not names:
             return {}
         g = self.graph_name
-        labels = [self._normalize_node_id(n) for n in names]
         query = (
             f"SELECT {self._EID_EXPR} AS name, id"
             f" FROM {g}.base"
@@ -4367,7 +4372,7 @@ class PGGraphStorage(BaseGraphStorage):
         )
         try:
             data = await self.db.query(
-                query, [labels], multirows=True,
+                query, [list(names)], multirows=True,
                 with_age=True, graph_name=g,
             )
         except Exception as e:
@@ -4376,15 +4381,12 @@ class PGGraphStorage(BaseGraphStorage):
         gid_map: dict[str, str] = {}
         for row in data or []:
             gid_map[row["name"]] = row["id"]
-        return {
-            name: gid_map.get(self._normalize_node_id(name))
-            for name in names
-        }
+        return {name: gid_map.get(name) for name in names}
 
     async def _resolve_graph_ids_to_names_batch(
-        self, graph_ids: list,
+        self, graph_ids: list[str],
     ) -> dict[str, str]:
-        """Convert multiple AGE graph IDs to entity names in one query."""
+        """Convert multiple AGE graph IDs (graphid as str) to entity names."""
         if not graph_ids:
             return {}
         g = self.graph_name
@@ -4404,20 +4406,23 @@ class PGGraphStorage(BaseGraphStorage):
         return {row["id"]: row["name"] for row in data or []}
 
     async def _fetch_neighbors_batch(
-        self, frontier_ids: list,
-    ) -> dict:
-        """Fetch all neighbors for a batch of node IDs.
+        self, frontier_ids: list[str],
+    ) -> dict[str, list[str]]:
+        """Fetch all neighbors for a batch of node IDs (graphid as str).
 
         Uses UNION ALL to enable separate index scans on start_id and end_id.
+        Returns adjacency map: node_id -> [neighbor_ids].
         """
         if not frontier_ids:
             return {}
         g = self.graph_name
         query = (
-            f"SELECT start_id, end_id FROM {g}.\"DIRECTED\""
+            f"SELECT start_id, end_id"
+            f" FROM {g}.\"DIRECTED\""
             f" WHERE start_id = ANY($1::graphid[])"
             f" UNION ALL"
-            f" SELECT start_id, end_id FROM {g}.\"DIRECTED\""
+            f" SELECT start_id, end_id"
+            f" FROM {g}.\"DIRECTED\""
             f" WHERE end_id = ANY($1::graphid[])"
         )
         try:
@@ -4429,7 +4434,7 @@ class PGGraphStorage(BaseGraphStorage):
             logger.warning(f"Batch neighbor fetch failed: {e}")
             return {}
         frontier_set = set(frontier_ids)
-        adj: dict = {}
+        adj: dict[str, list[str]] = {}
         for row in data or []:
             s, e = row["start_id"], row["end_id"]
             if s in frontier_set:
